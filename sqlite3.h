@@ -30,7 +30,7 @@
 ** the version number) and changes its name to "sqlite3.h" as
 ** part of the build process.
 **
-** @(#) $Id: sqlite.h.in,v 1.282 2008/01/31 16:36:40 drh Exp $
+** @(#) $Id: sqlite.h.in,v 1.284 2008/02/06 14:11:35 drh Exp $
 */
 #ifndef _SQLITE3_H_
 #define _SQLITE3_H_
@@ -93,8 +93,8 @@ extern "C" {
 **          with the value  (X*1000000 + Y*1000 + Z) where X, Y, and
 **          Z are the major version, minor version, and release number.
 */
-#define SQLITE_VERSION         "3.5.5"
-#define SQLITE_VERSION_NUMBER 3005005
+#define SQLITE_VERSION         "3.5.6"
+#define SQLITE_VERSION_NUMBER 3005006
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers {F10020}
@@ -2348,7 +2348,6 @@ typedef struct sqlite3_context sqlite3_context;
 ** for "?NNN" parameters is the value of NNN.
 ** The NNN value must be between 1 and the compile-time
 ** parameter SQLITE_MAX_VARIABLE_NUMBER (default value: 999).
-** See <a href="limits.html">limits.html</a> for additional information.
 **
 ** The third argument is the value to bind to the parameter.
 **
@@ -3561,6 +3560,9 @@ typedef void (*sqlite3_destructor_type)(void*);
 ** routines make a copy private copy of the error message text before
 ** they return.  {END} Hence, the calling function can deallocate or
 ** modify the text after they return without harm.
+** The sqlite3_result_error_code() function changes the error code
+** returned by SQLite as a result of an error in a function.  By default,
+** the error code is SQLITE_ERROR. 
 **
 ** {F16421} The sqlite3_result_toobig() interface causes SQLite
 ** to throw an error indicating that a string or BLOB is to long
@@ -3623,6 +3625,7 @@ void sqlite3_result_error(sqlite3_context*, const char*, int);
 void sqlite3_result_error16(sqlite3_context*, const void*, int);
 void sqlite3_result_error_toobig(sqlite3_context*);
 void sqlite3_result_error_nomem(sqlite3_context*);
+void sqlite3_result_error_code(sqlite3_context*, int);
 void sqlite3_result_int(sqlite3_context*, int);
 void sqlite3_result_int64(sqlite3_context*, sqlite3_int64);
 void sqlite3_result_null(sqlite3_context*);

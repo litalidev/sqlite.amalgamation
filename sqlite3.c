@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.5.5.  By combining all the individual C code files into this 
+** version 3.5.6.  By combining all the individual C code files into this 
 ** single large file, the entire code can be compiled as a one translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -11,13 +11,13 @@
 ** programs, you need this file and the "sqlite3.h" header file that defines
 ** the programming interface to the SQLite library.  (If you do not have 
 ** the "sqlite3.h" header file at hand, you will find a copy in the first
-** 4801 lines past this header comment.)  Additional code files may be
+** 4804 lines past this header comment.)  Additional code files may be
 ** needed if you want a wrapper to interface SQLite with your choice of
 ** programming language.  The code for the "sqlite3" command-line shell
 ** is also in a separate file.  This file contains only code for the core
 ** SQLite library.
 **
-** This amalgamation was generated on 2008-01-31 16:37:58 UTC.
+** This amalgamation was generated on 2008-02-06 15:03:26 UTC.
 */
 #define SQLITE_CORE 1
 #define SQLITE_AMALGAMATION 1
@@ -41,7 +41,7 @@
 *************************************************************************
 ** Internal interface definitions for SQLite.
 **
-** @(#) $Id: sqliteInt.h,v 1.658 2008/01/30 16:14:23 drh Exp $
+** @(#) $Id: sqliteInt.h,v 1.659 2008/02/02 04:47:09 danielk1977 Exp $
 */
 #ifndef _SQLITEINT_H_
 #define _SQLITEINT_H_
@@ -396,7 +396,7 @@
 ** the version number) and changes its name to "sqlite3.h" as
 ** part of the build process.
 **
-** @(#) $Id: sqlite.h.in,v 1.282 2008/01/31 16:36:40 drh Exp $
+** @(#) $Id: sqlite.h.in,v 1.284 2008/02/06 14:11:35 drh Exp $
 */
 #ifndef _SQLITE3_H_
 #define _SQLITE3_H_
@@ -459,8 +459,8 @@ extern "C" {
 **          with the value  (X*1000000 + Y*1000 + Z) where X, Y, and
 **          Z are the major version, minor version, and release number.
 */
-#define SQLITE_VERSION         "3.5.5"
-#define SQLITE_VERSION_NUMBER 3005005
+#define SQLITE_VERSION         "3.5.6"
+#define SQLITE_VERSION_NUMBER 3005006
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers {F10020}
@@ -2714,7 +2714,6 @@ typedef struct sqlite3_context sqlite3_context;
 ** for "?NNN" parameters is the value of NNN.
 ** The NNN value must be between 1 and the compile-time
 ** parameter SQLITE_MAX_VARIABLE_NUMBER (default value: 999).
-** See <a href="limits.html">limits.html</a> for additional information.
 **
 ** The third argument is the value to bind to the parameter.
 **
@@ -3927,6 +3926,9 @@ typedef void (*sqlite3_destructor_type)(void*);
 ** routines make a copy private copy of the error message text before
 ** they return.  {END} Hence, the calling function can deallocate or
 ** modify the text after they return without harm.
+** The sqlite3_result_error_code() function changes the error code
+** returned by SQLite as a result of an error in a function.  By default,
+** the error code is SQLITE_ERROR. 
 **
 ** {F16421} The sqlite3_result_toobig() interface causes SQLite
 ** to throw an error indicating that a string or BLOB is to long
@@ -3989,6 +3991,7 @@ SQLITE_API void sqlite3_result_error(sqlite3_context*, const char*, int);
 SQLITE_API void sqlite3_result_error16(sqlite3_context*, const void*, int);
 SQLITE_API void sqlite3_result_error_toobig(sqlite3_context*);
 SQLITE_API void sqlite3_result_error_nomem(sqlite3_context*);
+SQLITE_API void sqlite3_result_error_code(sqlite3_context*, int);
 SQLITE_API void sqlite3_result_int(sqlite3_context*, int);
 SQLITE_API void sqlite3_result_int64(sqlite3_context*, sqlite3_int64);
 SQLITE_API void sqlite3_result_null(sqlite3_context*);
@@ -6250,7 +6253,7 @@ SQLITE_PRIVATE   void sqlite3VdbeComment(Vdbe*, const char*, ...);
 ** subsystem.  The page cache subsystem reads and writes a file a page
 ** at a time and provides a journal for rollback.
 **
-** @(#) $Id: pager.h,v 1.68 2007/11/28 16:19:56 drh Exp $
+** @(#) $Id: pager.h,v 1.69 2008/02/02 20:47:38 drh Exp $
 */
 
 #ifndef _PAGER_H_
@@ -6349,7 +6352,6 @@ SQLITE_PRIVATE   int sqlite3PagerIswriteable(DbPage*);
 #ifdef SQLITE_TEST
 SQLITE_PRIVATE   int *sqlite3PagerStats(Pager*);
 SQLITE_PRIVATE   void sqlite3PagerRefdump(Pager*);
-  int pager3_refinfo_enable;
 #endif
 
 #ifdef SQLITE_TEST
@@ -8117,7 +8119,6 @@ SQLITE_PRIVATE int sqlite3Select(Parse*, Select*, SelectDest*, Select*, int, int
 SQLITE_PRIVATE Select *sqlite3SelectNew(Parse*,ExprList*,SrcList*,Expr*,ExprList*,
                          Expr*,ExprList*,int,Expr*,Expr*);
 SQLITE_PRIVATE void sqlite3SelectDelete(Select*);
-SQLITE_PRIVATE void sqlite3SelectMask(Parse *, Select *, u32);
 SQLITE_PRIVATE Table *sqlite3SrcListLookup(Parse*, SrcList*);
 SQLITE_PRIVATE int sqlite3IsReadOnly(Parse*, Table*, int);
 SQLITE_PRIVATE void sqlite3OpenTable(Parse*, int iCur, int iDb, Table*, int);
@@ -8203,12 +8204,14 @@ SQLITE_PRIVATE   TriggerStep *sqlite3TriggerUpdateStep(sqlite3*,Token*,ExprList*
 SQLITE_PRIVATE   TriggerStep *sqlite3TriggerDeleteStep(sqlite3*,Token*, Expr*);
 SQLITE_PRIVATE   void sqlite3DeleteTrigger(Trigger*);
 SQLITE_PRIVATE   void sqlite3UnlinkAndDeleteTrigger(sqlite3*,int,const char*);
+SQLITE_PRIVATE   void sqlite3SelectMask(Parse *, Select *, u32);
 #else
 # define sqlite3TriggersExist(A,B,C,D,E,F) 0
 # define sqlite3DeleteTrigger(A)
 # define sqlite3DropTriggerPtr(A,B)
 # define sqlite3UnlinkAndDeleteTrigger(A,B,C)
 # define sqlite3CodeRowTrigger(A,B,C,D,E,F,G,H,I,J,K) 0
+# define sqlite3SelectMask(A, B, C)
 #endif
 
 SQLITE_PRIVATE int sqlite3JoinType(Parse*, Token*, Token*, Token*);
@@ -11389,7 +11392,7 @@ SQLITE_API int sqlite3_mutex_notheld(sqlite3_mutex *p){
 *************************************************************************
 ** This file contains the C functions that implement mutexes for OS/2
 **
-** $Id: mutex_os2.c,v 1.4 2007/12/30 23:29:07 pweilbacher Exp $
+** $Id: mutex_os2.c,v 1.5 2008/02/01 19:42:38 pweilbacher Exp $
 */
 
 /*
@@ -11408,12 +11411,13 @@ SQLITE_API int sqlite3_mutex_notheld(sqlite3_mutex *p){
 ** Each recursive mutex is an instance of the following structure.
 */
 struct sqlite3_mutex {
-  PSZ  mutexName;   /* Mutex name controlling the lock */
   HMTX mutex;       /* Mutex controlling the lock */
   int  id;          /* Mutex type */
   int  nRef;        /* Number of references */
   TID  owner;       /* Thread holding this mutex */
 };
+
+#define OS2_MUTEX_INITIALIZER   0,0,0,0
 
 /*
 ** The sqlite3_mutex_alloc() routine allocates a new
@@ -11455,46 +11459,55 @@ struct sqlite3_mutex {
 ** the same type number.
 */
 SQLITE_API sqlite3_mutex *sqlite3_mutex_alloc(int iType){
-  PSZ mutex_name = "\\SEM32\\SQLITE\\MUTEX";
-  int mutex_name_len = strlen(mutex_name) + 1; /* name length + null byte */
-  sqlite3_mutex *p;
-
+  sqlite3_mutex *p = NULL;
   switch( iType ){
     case SQLITE_MUTEX_FAST:
     case SQLITE_MUTEX_RECURSIVE: {
       p = sqlite3MallocZero( sizeof(*p) );
       if( p ){
-        p->mutexName = (PSZ)malloc(mutex_name_len);
-        sqlite3_snprintf(mutex_name_len, p->mutexName, "%s", mutex_name);
         p->id = iType;
-        DosCreateMutexSem(p->mutexName, &p->mutex, 0, FALSE);
-        DosOpenMutexSem(p->mutexName, &p->mutex);
+        if( DosCreateMutexSem( 0, &p->mutex, 0, FALSE ) != NO_ERROR ){
+          sqlite3_free( p );
+          p = NULL;
+        }
       }
       break;
     }
     default: {
-      static sqlite3_mutex staticMutexes[5];
-      static int isInit = 0;
-      while( !isInit ) {
-        static long lock = 0;
-        DosEnterCritSec();
-        lock++;
-        if( lock == 1 ) {
-          int i;
-          DosExitCritSec();
-          for(i = 0; i < sizeof(staticMutexes)/sizeof(staticMutexes[0]); i++) {
-            staticMutexes[i].mutexName = (PSZ)malloc(mutex_name_len + 1);
-            sqlite3_snprintf(mutex_name_len + 1, /* one more for the number */
-                             staticMutexes[i].mutexName, "%s%1d", mutex_name, i);
-            DosCreateMutexSem(staticMutexes[i].mutexName,
-                              &staticMutexes[i].mutex, 0, FALSE);
-            DosOpenMutexSem(staticMutexes[i].mutexName,
-                            &staticMutexes[i].mutex);
+      static volatile int isInit = 0;
+      static sqlite3_mutex staticMutexes[] = {
+        { OS2_MUTEX_INITIALIZER, },
+        { OS2_MUTEX_INITIALIZER, },
+        { OS2_MUTEX_INITIALIZER, },
+        { OS2_MUTEX_INITIALIZER, },
+        { OS2_MUTEX_INITIALIZER, },
+      };
+      if ( !isInit ){
+        APIRET rc;
+        PTIB ptib;
+        PPIB ppib;
+        HMTX mutex;
+        char name[32];
+        DosGetInfoBlocks( &ptib, &ppib );
+        sqlite3_snprintf( sizeof(name), name, "\\SEM32\\SQLITE%04x",
+                          ppib->pib_ulpid );
+        while( !isInit ){
+          mutex = 0;
+          rc = DosCreateMutexSem( name, &mutex, 0, FALSE);
+          if( rc == NO_ERROR ){
+            int i;
+            if( !isInit ){
+              for( i = 0; i < sizeof(staticMutexes)/sizeof(staticMutexes[0]); i++ ){
+                DosCreateMutexSem( 0, &staticMutexes[i].mutex, 0, FALSE );
+              }
+              isInit = 1;
+            }
+            DosCloseMutexSem( mutex );
+          }else if( rc == ERROR_DUPLICATE_NAME ){
+            DosSleep( 1 );
+          }else{
+            return p;
           }
-          isInit = 1;
-        } else {
-          DosExitCritSec();
-          DosSleep(1);
         }
       }
       assert( iType-2 >= 0 );
@@ -11516,9 +11529,8 @@ SQLITE_API void sqlite3_mutex_free(sqlite3_mutex *p){
   assert( p );
   assert( p->nRef==0 );
   assert( p->id==SQLITE_MUTEX_FAST || p->id==SQLITE_MUTEX_RECURSIVE );
-  DosCloseMutexSem(p->mutex);
-  free(p->mutexName);
-  sqlite3_free(p);
+  DosCloseMutexSem( p->mutex );
+  sqlite3_free( p );
 }
 
 /*
@@ -13653,7 +13665,7 @@ struct sqlite3_context {
   VdbeFunc *pVdbeFunc;  /* Auxilary data, if created. */
   Mem s;                /* The return value is stored here */
   Mem *pMem;            /* Memory cell used to store aggregate context */
-  u8 isError;           /* Set to true for an error */
+  int isError;          /* Error code returned by the function. */
   CollSeq *pColl;       /* Collating sequence */
 };
 
@@ -15970,15 +15982,10 @@ int os2Write(
 */
 int os2Truncate( sqlite3_file *id, i64 nByte ){
   APIRET rc = NO_ERROR;
-  ULONG filePosition = 0L;
   os2File *pFile = (os2File*)id;
   OSTRACE3( "TRUNCATE %d %lld\n", pFile->h, nByte );
   SimulateIOError( return SQLITE_IOERR_TRUNCATE );
-  rc = DosSetFilePtr( pFile->h, nByte, FILE_BEGIN, &filePosition );
-  if( rc != NO_ERROR ){
-    return SQLITE_IOERR;
-  }
-  rc = DosSetFilePtr( pFile->h, 0L, FILE_END, &filePosition );
+  rc = DosSetFileSize( pFile->h, nByte );
   return rc == NO_ERROR ? SQLITE_OK : SQLITE_IOERR;
 }
 
@@ -16570,8 +16577,7 @@ static int os2GetTempname( sqlite3_vfs *pVfs, int nBuf, char *zBuf ){
     j--;
   }
   zTempPath[j] = '\0';
-  assert( nBuf>=pVfs->mxPathname );
-  sqlite3_snprintf( pVfs->mxPathname-30, zBuf,
+  sqlite3_snprintf( nBuf-30, zBuf,
                     "%s\\"SQLITE_TEMP_FILE_PREFIX, zTempPath );
   j = strlen( zBuf );
   sqlite3Randomness( 20, &zBuf[j] );
@@ -16595,24 +16601,8 @@ static int os2FullPathname(
   int nFull,                  /* Size of output buffer in bytes */
   char *zFull                 /* Output buffer */
 ){
-  if( strchr(zRelative, ':') ){
-    sqlite3_snprintf( nFull, zFull, "%s", zRelative );
-  }else{
-    ULONG ulDriveNum = 0;
-    ULONG ulDriveMap = 0;
-    ULONG cbzBufLen = SQLITE_TEMPNAME_SIZE;
-    char *zBuff = (char*)malloc( cbzBufLen );
-    if( zBuff == 0 ){
-      return SQLITE_NOMEM;
-    }
-    DosQueryCurrentDisk( &ulDriveNum, &ulDriveMap );
-    if( DosQueryCurrentDir( ulDriveNum, (PBYTE)zBuff, &cbzBufLen ) == NO_ERROR ){
-      sqlite3_snprintf( nFull, zFull, "%c:\\%s\\%s",
-                               (char)('A' + ulDriveNum - 1), zBuff, zRelative);
-    }
-    free( zBuff );
-  }
-  return SQLITE_OK;
+  APIRET rc = DosQueryPathInfo( zRelative, FIL_QUERYFULLNAME, zFull, nFull );
+  return rc == NO_ERROR ? SQLITE_OK : SQLITE_IOERR;
 }
 
 #ifndef SQLITE_OMIT_LOAD_EXTENSION
@@ -21415,7 +21405,7 @@ SQLITE_PRIVATE sqlite3_vfs *sqlite3OsDefaultVfs(void){
 ** file simultaneously, or one process from reading the database while
 ** another is writing.
 **
-** @(#) $Id: pager.c,v 1.404 2008/01/22 21:30:53 drh Exp $
+** @(#) $Id: pager.c,v 1.405 2008/02/02 20:47:38 drh Exp $
 */
 #ifndef SQLITE_OMIT_DISKIO
 
@@ -21924,25 +21914,6 @@ static const unsigned char aJournalMagic[] = {
 #else
 # define pagerEnter(X)
 # define pagerLeave(X)
-#endif
-
-/*
-** Enable reference count tracking (for debugging) here:
-*/
-#ifdef SQLITE_DEBUG
-  int pager3_refinfo_enable = 0;
-  static void pager_refinfo(PgHdr *p){
-    static int cnt = 0;
-    if( !pager3_refinfo_enable ) return;
-    sqlite3DebugPrintf(
-       "REFCNT: %4d addr=%p nRef=%-3d total=%d\n",
-       p->pgno, PGHDR_TO_DATA(p), p->nRef, p->pPager->nRef
-    );
-    cnt++;   /* Something to set a breakpoint on */
-  }
-# define REFINFO(X)  pager_refinfo(X)
-#else
-# define REFINFO(X)
 #endif
 
 /*
@@ -24114,7 +24085,6 @@ static void _page_ref(PgHdr *pPg){
     pPg->pPager->nRef++;
   }
   pPg->nRef++;
-  REFINFO(pPg);
 }
 #ifdef SQLITE_DEBUG
   static void page_ref(PgHdr *pPg){
@@ -24122,7 +24092,6 @@ static void _page_ref(PgHdr *pPg){
       _page_ref(pPg);
     }else{
       pPg->nRef++;
-      REFINFO(pPg);
     }
   }
 #else
@@ -25043,7 +25012,6 @@ static int pagerAcquire(
 
     makeClean(pPg);
     pPg->nRef = 1;
-    REFINFO(pPg);
 
     pPager->nRef++;
     if( pPager->nExtra>0 ){
@@ -25164,7 +25132,6 @@ SQLITE_PRIVATE int sqlite3PagerUnref(DbPage *pPg){
   assert( pPg->nRef>0 );
   pagerEnter(pPg->pPager);
   pPg->nRef--;
-  REFINFO(pPg);
 
   CHECK_PAGE(pPg);
 
@@ -38097,13 +38064,13 @@ SQLITE_API void sqlite3_result_double(sqlite3_context *pCtx, double rVal){
 }
 SQLITE_API void sqlite3_result_error(sqlite3_context *pCtx, const char *z, int n){
   assert( sqlite3_mutex_held(pCtx->s.db->mutex) );
-  pCtx->isError = 1;
+  pCtx->isError = SQLITE_ERROR;
   sqlite3VdbeMemSetStr(&pCtx->s, z, n, SQLITE_UTF8, SQLITE_TRANSIENT);
 }
 #ifndef SQLITE_OMIT_UTF16
 SQLITE_API void sqlite3_result_error16(sqlite3_context *pCtx, const void *z, int n){
   assert( sqlite3_mutex_held(pCtx->s.db->mutex) );
-  pCtx->isError = 1;
+  pCtx->isError = SQLITE_ERROR;
   sqlite3VdbeMemSetStr(&pCtx->s, z, n, SQLITE_UTF16NATIVE, SQLITE_TRANSIENT);
 }
 #endif
@@ -38165,6 +38132,9 @@ SQLITE_API void sqlite3_result_zeroblob(sqlite3_context *pCtx, int n){
   assert( sqlite3_mutex_held(pCtx->s.db->mutex) );
   sqlite3VdbeMemSetZeroBlob(&pCtx->s, n);
 }
+SQLITE_API void sqlite3_result_error_code(sqlite3_context *pCtx, int errCode){
+  pCtx->isError = errCode;
+}
 
 /* Force an SQLITE_TOOBIG error. */
 SQLITE_API void sqlite3_result_error_toobig(sqlite3_context *pCtx){
@@ -38176,7 +38146,7 @@ SQLITE_API void sqlite3_result_error_toobig(sqlite3_context *pCtx){
 SQLITE_API void sqlite3_result_error_nomem(sqlite3_context *pCtx){
   assert( sqlite3_mutex_held(pCtx->s.db->mutex) );
   sqlite3VdbeMemSetNull(&pCtx->s);
-  pCtx->isError = 1;
+  pCtx->isError = SQLITE_NOMEM;
   pCtx->s.db->mallocFailed = 1;
 }
 
@@ -39043,7 +39013,7 @@ SQLITE_API sqlite3 *sqlite3_db_handle(sqlite3_stmt *pStmt){
 ** in this file for details.  If in doubt, do not deviate from existing
 ** commenting and indentation practices when changing or adding code.
 **
-** $Id: vdbe.c,v 1.706 2008/01/31 15:53:45 drh Exp $
+** $Id: vdbe.c,v 1.708 2008/02/06 14:11:35 drh Exp $
 */
 
 /*
@@ -40242,7 +40212,7 @@ case OP_Function: {
   /* If the function returned an error, throw an exception */
   if( ctx.isError ){
     sqlite3SetString(&p->zErrMsg, sqlite3_value_text(&ctx.s), (char*)0);
-    rc = SQLITE_ERROR;
+    rc = ctx.isError;
   }
 
   /* Copy the result of the function into register P3 */
@@ -43215,7 +43185,7 @@ case OP_AggStep: {
   (ctx.pFunc->xStep)(&ctx, n, apVal);
   if( ctx.isError ){
     sqlite3SetString(&p->zErrMsg, sqlite3_value_text(&ctx.s), (char*)0);
-    rc = SQLITE_ERROR;
+    rc = ctx.isError;
   }
   sqlite3VdbeMemRelease(&ctx.s);
   break;
@@ -43473,6 +43443,7 @@ case OP_VFilter: {   /* jump */
       pc = pOp->p2 - 1;
     }
   }
+  pCur->nullRow = 0;
 
   break;
 }
@@ -48446,7 +48417,7 @@ SQLITE_PRIVATE int sqlite3AnalysisLoad(sqlite3 *db, int iDb){
 *************************************************************************
 ** This file contains code used to implement the ATTACH and DETACH commands.
 **
-** $Id: attach.c,v 1.70 2008/01/23 03:03:05 drh Exp $
+** $Id: attach.c,v 1.71 2008/02/06 14:11:35 drh Exp $
 */
 
 #ifndef SQLITE_OMIT_ATTACH
@@ -48656,6 +48627,7 @@ attach_error:
     zErr[sizeof(zErr)-1] = 0;
     sqlite3_result_error(context, zErr, -1);
   }
+  if( rc ) sqlite3_result_error_code(context, rc);
 }
 
 /*
@@ -75201,7 +75173,6 @@ struct sqlite3_tokenizer_cursor {
 /************** End of fts3_tokenizer.h **************************************/
 /************** Continuing where we left off in fts3.c ***********************/
 #ifndef SQLITE_CORE 
-  #include "sqlite3ext.h"
   SQLITE_EXTENSION_INIT1
 #endif
 
@@ -82355,7 +82326,9 @@ SQLITE_PRIVATE void sqlite3Fts3PorterTokenizerModule(
 */
 #if !defined(SQLITE_CORE) || defined(SQLITE_ENABLE_FTS3)
 
-SQLITE_EXTENSION_INIT1
+#ifndef SQLITE_CORE
+  SQLITE_EXTENSION_INIT1
+#endif
 
 
 /*
