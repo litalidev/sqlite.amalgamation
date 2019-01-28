@@ -30,7 +30,7 @@
 ** the version number) and changes its name to "sqlite3.h" as
 ** part of the build process.
 **
-** @(#) $Id: sqlite.h.in,v 1.269 2007/11/05 17:54:17 drh Exp $
+** @(#) $Id: sqlite.h.in,v 1.271 2007/11/21 15:24:01 drh Exp $
 */
 #ifndef _SQLITE3_H_
 #define _SQLITE3_H_
@@ -89,8 +89,8 @@ extern "C" {
 **
 ** See also: [sqlite3_libversion()] and [sqlite3_libversion_number()].
 */
-#define SQLITE_VERSION         "3.5.2"
-#define SQLITE_VERSION_NUMBER 3005002
+#define SQLITE_VERSION         "3.5.3"
+#define SQLITE_VERSION_NUMBER 3005003
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -1595,6 +1595,23 @@ int sqlite3_prepare16_v2(
 );
 
 /*
+** Retrieve the original SQL statement associated with a compiled statement
+** in UTF-8 encoding.
+**
+** If the compiled SQL statement passed as an argument was compiled using
+** either sqlite3_prepare_v2 or sqlite3_prepare16_v2, then this function
+** returns a pointer to a nul-terminated string containing a copy of
+** the original SQL statement. The pointer is valid until the statement
+** is deleted using sqlite3_finalize().
+**
+** If the statement was compiled using either of the legacy interfaces 
+** sqlite3_prepare() or sqlite3_prepare16(), this function returns NULL.
+** 
+****** EXPERIMENTAL - subject to change without notice **************
+*/
+const char *sqlite3_sql(sqlite3_stmt *pStmt);
+
+/*
 ** CAPI3REF:  Dynamically Typed Value Object
 **
 ** SQLite uses dynamic typing for the values it stores.  Values can 
@@ -2923,7 +2940,7 @@ int sqlite3_enable_load_extension(sqlite3 *db, int onoff);
 ** This routine stores a pointer to the extension in an array
 ** that is obtained from malloc().  If you run a memory leak
 ** checker on your program and it reports a leak because of this
-** array, then invoke [sqlite3_automatic_extension_reset()] prior
+** array, then invoke [sqlite3_reset_auto_extension()] prior
 ** to shutdown to free the memory.
 **
 ** Automatic extensions apply across all threads.
