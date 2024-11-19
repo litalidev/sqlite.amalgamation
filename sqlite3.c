@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.41.0.  By combining all the individual C code files into this
+** version 3.41.1.  By combining all the individual C code files into this
 ** single large file, the entire code can be compiled as a single translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -452,9 +452,9 @@ extern "C" {
 ** [sqlite3_libversion_number()], [sqlite3_sourceid()],
 ** [sqlite_version()] and [sqlite_source_id()].
 */
-#define SQLITE_VERSION        "3.41.0"
-#define SQLITE_VERSION_NUMBER 3041000
-#define SQLITE_SOURCE_ID      "2023-02-21 18:09:37 05941c2a04037fc3ed2ffae11f5d2260706f89431f463518740f72ada350866d"
+#define SQLITE_VERSION        "3.41.1"
+#define SQLITE_VERSION_NUMBER 3041001
+#define SQLITE_SOURCE_ID      "2023-03-10 12:13:52 20399f3eda5ec249d147ba9e48da6e87f969d7966a9a896764ca437ff7e737ff"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -19156,6 +19156,7 @@ struct IndexedExpr {
   int iIdxCur;            /* The index cursor */
   int iIdxCol;            /* The index column that contains value of pExpr */
   u8 bMaybeNullRow;       /* True if we need an OP_IfNullRow check */
+  u8 aff;                 /* Affinity of the pExpr expression */
   IndexedExpr *pIENext;   /* Next in a list of all indexed expressions */
 #ifdef SQLITE_ENABLE_EXPLAIN_COMMENTS
   const char *zIdxName;   /* Name of index, used only for bytecode comments */
@@ -90915,8 +90916,7 @@ static u64 filterHash(const Mem *aMem, const Op *pOp){
     }else if( p->flags & MEM_Real ){
       h += sqlite3VdbeIntValue(p);
     }else if( p->flags & (MEM_Str|MEM_Blob) ){
-      h += p->n;
-      if( p->flags & MEM_Zero ) h += p->u.nZero;
+      /* no-op */
     }
   }
   return h;
@@ -104495,14 +104495,10 @@ static int resolveExprStep(Walker *pWalker, Expr *pExpr){
       if( 0==sqlite3ExprCanBeNull(pExpr->pLeft) && !IN_RENAME_OBJECT ){
         testcase( ExprHasProperty(pExpr, EP_OuterON) );
         assert( !ExprHasProperty(pExpr, EP_IntValue) );
-        if( pExpr->op==TK_NOTNULL ){
-          pExpr->u.zToken = "true";
-          ExprSetProperty(pExpr, EP_IsTrue);
-        }else{
-          pExpr->u.zToken = "false";
-          ExprSetProperty(pExpr, EP_IsFalse);
-        }
-        pExpr->op = TK_TRUEFALSE;
+        pExpr->u.iValue = (pExpr->op==TK_NOTNULL);
+        pExpr->flags |= EP_IntValue;
+        pExpr->op = TK_INTEGER;
+
         for(i=0, p=pNC; p && i<ArraySize(anRef); p=p->pNext, i++){
           p->nRef = anRef[i];
         }
@@ -109848,6 +109844,7 @@ static SQLITE_NOINLINE int sqlite3IndexedExprLookup(
   IndexedExpr *p;
   Vdbe *v;
   for(p=pParse->pIdxEpr; p; p=p->pIENext){
+    u8 exprAff;
     int iDataCur = p->iDataCur;
     if( iDataCur<0 ) continue;
     if( pParse->iSelfTab ){
@@ -109855,6 +109852,16 @@ static SQLITE_NOINLINE int sqlite3IndexedExprLookup(
       iDataCur = -1;
     }
     if( sqlite3ExprCompare(0, pExpr, p->pExpr, iDataCur)!=0 ) continue;
+    assert( p->aff>=SQLITE_AFF_BLOB && p->aff<=SQLITE_AFF_NUMERIC );
+    exprAff = sqlite3ExprAffinity(pExpr);
+    if( (exprAff<=SQLITE_AFF_BLOB && p->aff!=SQLITE_AFF_BLOB)
+     || (exprAff==SQLITE_AFF_TEXT && p->aff!=SQLITE_AFF_TEXT)
+     || (exprAff>=SQLITE_AFF_NUMERIC && p->aff!=SQLITE_AFF_NUMERIC)
+    ){
+      /* Affinity mismatch on a generated column */
+      continue;
+    }
+
     v = pParse->pVdbe;
     assert( v!=0 );
     if( p->bMaybeNullRow ){
@@ -110434,10 +110441,13 @@ expr_code_doover:
       return target;
     }
     case TK_COLLATE: {
-      if( !ExprHasProperty(pExpr, EP_Collate)
-       && ALWAYS(pExpr->pLeft)
-       && pExpr->pLeft->op==TK_FUNCTION
-      ){
+      if( !ExprHasProperty(pExpr, EP_Collate) ){
+        /* A TK_COLLATE Expr node without the EP_Collate tag is a so-called
+        ** "SOFT-COLLATE" that is added to constraints that are pushed down
+        ** from outer queries into sub-queries by the push-down optimization.
+        ** Clear subtypes as subtypes may not cross a subquery boundary.
+        */
+        assert( pExpr->pLeft );
         inReg = sqlite3ExprCodeTarget(pParse, pExpr->pLeft, target);
         if( inReg!=target ){
           sqlite3VdbeAddOp2(v, OP_SCopy, inReg, target);
@@ -110545,16 +110555,22 @@ expr_code_doover:
           break;
         }
       }
-      addrINR = sqlite3VdbeAddOp1(v, OP_IfNullRow, pExpr->iTable);
-      /* Temporarily disable factoring of constant expressions, since
-      ** even though expressions may appear to be constant, they are not
-      ** really constant because they originate from the right-hand side
-      ** of a LEFT JOIN. */
-      pParse->okConstFactor = 0;
+      addrINR = sqlite3VdbeAddOp3(v, OP_IfNullRow, pExpr->iTable, 0, target);
+      /* The OP_IfNullRow opcode above can overwrite the result register with
+      ** NULL.  So we have to ensure that the result register is not a value
+      ** that is suppose to be a constant.  Two defenses are needed:
+      **   (1)  Temporarily disable factoring of constant expressions
+      **   (2)  Make sure the computed value really is stored in register
+      **        "target" and not someplace else.
+      */
+      pParse->okConstFactor = 0;   /* note (1) above */
       inReg = sqlite3ExprCodeTarget(pParse, pExpr->pLeft, target);
       pParse->okConstFactor = okConstFactor;
+      if( inReg!=target ){         /* note (2) above */
+        sqlite3VdbeAddOp2(v, OP_SCopy, inReg, target);
+        inReg = target;
+      }
       sqlite3VdbeJumpHere(v, addrINR);
-      sqlite3VdbeChangeP3(v, addrINR, inReg);
       break;
     }
 
@@ -119478,6 +119494,7 @@ SQLITE_PRIVATE void sqlite3AddGenerated(Parse *pParse, Expr *pExpr, Token *pType
     ** turn it into one by adding a unary "+" operator. */
     pExpr = sqlite3PExpr(pParse, TK_UPLUS, pExpr, 0);
   }
+  if( pExpr && pExpr->op!=TK_RAISE ) pExpr->affExpr = pCol->affinity;
   sqlite3ColumnSetExpr(pParse, pTab, pCol, pExpr);
   pExpr = 0;
   goto generated_done;
@@ -126880,6 +126897,18 @@ static void ceilingFunc(
 */
 static double xCeil(double x){ return ceil(x); }
 static double xFloor(double x){ return floor(x); }
+
+/*
+** Some systems do not have log2() and log10() in their standard math
+** libraries.
+*/
+#if defined(HAVE_LOG10) && HAVE_LOG10==0
+# define log10(X) (0.4342944819032517867*log(X))
+#endif
+#if defined(HAVE_LOG2) && HAVE_LOG2==0
+# define log2(X) (1.442695040888963456*log(X))
+#endif
+
 
 /*
 ** Implementation of SQL functions:
@@ -136260,6 +136289,23 @@ SQLITE_PRIVATE void sqlite3Pragma(
             jmp4 = integrityCheckResultRow(v);
             sqlite3VdbeJumpHere(v, jmp2);
 
+            /* The OP_IdxRowid opcode is an optimized version of OP_Column
+            ** that extracts the rowid off the end of the index record.
+            ** But it only works correctly if index record does not have
+            ** any extra bytes at the end.  Verify that this is the case. */
+            if( HasRowid(pTab) ){
+              int jmp7;
+              sqlite3VdbeAddOp2(v, OP_IdxRowid, iIdxCur+j, 3);
+              jmp7 = sqlite3VdbeAddOp3(v, OP_Eq, 3, 0, r1+pIdx->nColumn-1);
+              VdbeCoverage(v);
+              sqlite3VdbeLoadString(v, 3,
+                 "rowid not at end-of-record for row ");
+              sqlite3VdbeAddOp3(v, OP_Concat, 7, 3, 3);
+              sqlite3VdbeLoadString(v, 4, " of index ");
+              sqlite3VdbeGoto(v, jmp5-1);
+              sqlite3VdbeJumpHere(v, jmp7);
+            }
+
             /* Any indexed columns with non-BINARY collations must still hold
             ** the exact same text value as the table. */
             label6 = 0;
@@ -140555,8 +140601,6 @@ SQLITE_PRIVATE void sqlite3SubqueryColumnTypes(
     pCol->affinity = sqlite3ExprAffinity(p);
     if( pCol->affinity<=SQLITE_AFF_NONE ){
       pCol->affinity = aff;
-    }else if( pCol->affinity>=SQLITE_AFF_NUMERIC && p->op==TK_CAST ){
-      pCol->affinity = SQLITE_AFF_FLEXNUM;
     }
     if( pCol->affinity>=SQLITE_AFF_TEXT && pSelect->pNext ){
       int m = 0;
@@ -140569,6 +140613,9 @@ SQLITE_PRIVATE void sqlite3SubqueryColumnTypes(
       }else
       if( pCol->affinity>=SQLITE_AFF_NUMERIC && (m&0x02)!=0 ){
         pCol->affinity = SQLITE_AFF_BLOB;
+      }
+      if( pCol->affinity>=SQLITE_AFF_NUMERIC && p->op==TK_CAST ){
+        pCol->affinity = SQLITE_AFF_FLEXNUM;
       }
     }
     zType = columnType(&sNC, p, 0, 0, 0);
@@ -142084,7 +142131,7 @@ static Expr *substExpr(
         sqlite3VectorErrorMsg(pSubst->pParse, pCopy);
       }else{
         sqlite3 *db = pSubst->pParse->db;
-        if( pSubst->isOuterJoin && pCopy->op!=TK_COLUMN ){
+        if( pSubst->isOuterJoin ){
           memset(&ifNullRow, 0, sizeof(ifNullRow));
           ifNullRow.op = TK_IF_NULL_ROW;
           ifNullRow.pLeft = pCopy;
@@ -144600,10 +144647,12 @@ static void optimizeAggregateUseOfIndexedExpr(
   NameContext *pNC        /* Name context used to resolve agg-func args */
 ){
   assert( pAggInfo->iFirstReg==0 );
+  assert( pSelect!=0 );
+  assert( pSelect->pGroupBy!=0 );
   pAggInfo->nColumn = pAggInfo->nAccumulator;
   if( ALWAYS(pAggInfo->nSortingColumn>0) ){
     if( pAggInfo->nColumn==0 ){
-      pAggInfo->nSortingColumn = 0;
+      pAggInfo->nSortingColumn = pSelect->pGroupBy->nExpr;
     }else{
       pAggInfo->nSortingColumn =
         pAggInfo->aCol[pAggInfo->nColumn-1].iSorterColumn+1;
@@ -145028,6 +145077,7 @@ static int countOfViewOptimization(Parse *pParse, Select *p){
   if( p->pEList->nExpr!=1 ) return 0;               /* Single result column */
   if( p->pWhere ) return 0;
   if( p->pGroupBy ) return 0;
+  if( p->pOrderBy ) return 0;
   pExpr = p->pEList->a[0].pExpr;
   if( pExpr->op!=TK_AGG_FUNCTION ) return 0;        /* Result is an aggregate */
   assert( ExprUseUToken(pExpr) );
@@ -145038,7 +145088,8 @@ static int countOfViewOptimization(Parse *pParse, Select *p){
   if( ExprHasProperty(pExpr, EP_WinFunc) ) return 0;/* Not a window function */
   pSub = p->pSrc->a[0].pSelect;
   if( pSub==0 ) return 0;                           /* The FROM is a subquery */
-  if( pSub->pPrior==0 ) return 0;                   /* Must be a compound ry */
+  if( pSub->pPrior==0 ) return 0;                   /* Must be a compound */
+  if( pSub->selFlags & SF_CopyCte ) return 0;       /* Not a CTE */
   do{
     if( pSub->op!=TK_ALL && pSub->pPrior ) return 0;  /* Must be UNION ALL */
     if( pSub->pWhere ) return 0;                      /* No WHERE clause */
@@ -145481,7 +145532,6 @@ SQLITE_PRIVATE int sqlite3Select(
    && countOfViewOptimization(pParse, p)
   ){
     if( db->mallocFailed ) goto select_end;
-    pEList = p->pEList;
     pTabList = p->pSrc;
   }
 #endif
@@ -147624,7 +147674,7 @@ static void codeReturningTrigger(
   }
   sqlite3ExprListDelete(db, sSelect.pEList);
   pNew = sqlite3ExpandReturning(pParse, pReturning->pReturnEL, pTab);
-  if( !db->mallocFailed ){
+  if( pParse->nErr==0 ){
     NameContext sNC;
     memset(&sNC, 0, sizeof(sNC));
     if( pReturning->nRetCol==0 ){
@@ -156848,7 +156898,7 @@ SQLITE_PRIVATE void sqlite3WhereTabFuncArgs(
     pRhs = sqlite3PExpr(pParse, TK_UPLUS,
         sqlite3ExprDup(pParse->db, pArgs->a[j].pExpr, 0), 0);
     pTerm = sqlite3PExpr(pParse, TK_EQ, pColRef, pRhs);
-    if( pItem->fg.jointype & (JT_LEFT|JT_LTORJ) ){
+    if( pItem->fg.jointype & (JT_LEFT|JT_LTORJ|JT_RIGHT) ){
       joinType = EP_OuterON;
     }else{
       joinType = EP_InnerON;
@@ -162556,6 +162606,9 @@ static SQLITE_NOINLINE void whereAddIndexedExpr(
     p->iIdxCur = iIdxCur;
     p->iIdxCol = i;
     p->bMaybeNullRow = bMaybeNullRow;
+    if( sqlite3IndexAffinityStr(pParse->db, pIdx) ){
+      p->aff = pIdx->zColAff[i];
+    }
 #ifdef SQLITE_ENABLE_EXPLAIN_COMMENTS
     p->zIdxName = pIdx->zName;
 #endif
@@ -240171,7 +240224,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2023-02-21 18:09:37 05941c2a04037fc3ed2ffae11f5d2260706f89431f463518740f72ada350866d", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2023-03-10 12:13:52 20399f3eda5ec249d147ba9e48da6e87f969d7966a9a896764ca437ff7e737ff", -1, SQLITE_TRANSIENT);
 }
 
 /*
