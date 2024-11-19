@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.38.4.  By combining all the individual C code files into this
+** version 3.38.5.  By combining all the individual C code files into this
 ** single large file, the entire code can be compiled as a single translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -452,9 +452,9 @@ extern "C" {
 ** [sqlite3_libversion_number()], [sqlite3_sourceid()],
 ** [sqlite_version()] and [sqlite_source_id()].
 */
-#define SQLITE_VERSION        "3.38.4"
-#define SQLITE_VERSION_NUMBER 3038004
-#define SQLITE_SOURCE_ID      "2022-05-04 15:45:55 d402f49871152670a62f4f28cacb15d814f2c1644e9347ad7d258e562978e45e"
+#define SQLITE_VERSION        "3.38.5"
+#define SQLITE_VERSION_NUMBER 3038005
+#define SQLITE_SOURCE_ID      "2022-05-06 15:25:27 78d9c993d404cdfaa7fdd2973fa1052e3da9f66215cff9c5540ebe55c407d9fe"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -133869,6 +133869,14 @@ SQLITE_PRIVATE void sqlite3ParseObjectInit(Parse *pParse, sqlite3 *db){
 }
 
 /*
+** Maximum number of times that we will try again to prepare a statement
+** that returns SQLITE_ERROR_RETRY.
+*/
+#ifndef SQLITE_MAX_PREPARE_RETRY
+# define SQLITE_MAX_PREPARE_RETRY 25
+#endif
+
+/*
 ** Compile the UTF-8 encoded SQL statement zSql into a statement handle.
 */
 static int sqlite3Prepare(
@@ -134042,7 +134050,7 @@ static int sqlite3LockAndPrepare(
     rc = sqlite3Prepare(db, zSql, nBytes, prepFlags, pOld, ppStmt, pzTail);
     assert( rc==SQLITE_OK || *ppStmt==0 );
     if( rc==SQLITE_OK || db->mallocFailed ) break;
-  }while( rc==SQLITE_ERROR_RETRY
+  }while( (rc==SQLITE_ERROR_RETRY && (cnt++)<SQLITE_MAX_PREPARE_RETRY)
        || (rc==SQLITE_SCHEMA && (sqlite3ResetOneSchema(db,-1), cnt++)==0) );
   sqlite3BtreeLeaveAll(db);
   rc = sqlite3ApiExit(db, rc);
@@ -234503,7 +234511,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2022-05-04 15:45:55 d402f49871152670a62f4f28cacb15d814f2c1644e9347ad7d258e562978e45e", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2022-05-06 15:25:27 78d9c993d404cdfaa7fdd2973fa1052e3da9f66215cff9c5540ebe55c407d9fe", -1, SQLITE_TRANSIENT);
 }
 
 /*
