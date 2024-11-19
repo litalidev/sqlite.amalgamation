@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.38.3.  By combining all the individual C code files into this
+** version 3.38.4.  By combining all the individual C code files into this
 ** single large file, the entire code can be compiled as a single translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -452,9 +452,9 @@ extern "C" {
 ** [sqlite3_libversion_number()], [sqlite3_sourceid()],
 ** [sqlite_version()] and [sqlite_source_id()].
 */
-#define SQLITE_VERSION        "3.38.3"
-#define SQLITE_VERSION_NUMBER 3038003
-#define SQLITE_SOURCE_ID      "2022-04-27 12:03:15 9547e2c38a1c6f751a77d4d796894dec4dc5d8f5d79b1cd39e1ffc50df7b3be4"
+#define SQLITE_VERSION        "3.38.4"
+#define SQLITE_VERSION_NUMBER 3038004
+#define SQLITE_SOURCE_ID      "2022-05-04 15:45:55 d402f49871152670a62f4f28cacb15d814f2c1644e9347ad7d258e562978e45e"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -88387,6 +88387,8 @@ case OP_Gosub: {            /* jump */
   /* Most jump operations do a goto to this spot in order to update
   ** the pOp pointer. */
 jump_to_p2:
+  assert( pOp->p2>0 );       /* There are never any jumps to instruction 0 */
+  assert( pOp->p2<p->nOp );  /* Jumps must be in range */
   pOp = &aOp[pOp->p2 - 1];
   break;
 }
@@ -148718,6 +148720,7 @@ static void preserveExpr(IdxExprTrans *pTrans, Expr *pExpr){
 static int whereIndexExprTransNode(Walker *p, Expr *pExpr){
   IdxExprTrans *pX = p->u.pIdxTrans;
   if( sqlite3ExprCompare(0, pExpr, pX->pIdxExpr, pX->iTabCur)==0 ){
+    pExpr = sqlite3ExprSkipCollate(pExpr);
     preserveExpr(pX, pExpr);
     pExpr->affExpr = sqlite3ExprAffinity(pExpr);
     pExpr->op = TK_COLUMN;
@@ -148877,6 +148880,8 @@ static SQLITE_NOINLINE void filterPullDown(
     /*         ,--- Because sqlite3ConstructBloomFilter() has will not have set
     **  vvvvv--'    pLevel->regFilter if this were true. */
     if( NEVER(pLoop->prereq & notReady) ) continue;
+    assert( pLevel->addrBrk==0 );
+    pLevel->addrBrk = addrNxt;
     if( pLoop->wsFlags & WHERE_IPK ){
       WhereTerm *pTerm = pLoop->aLTerm[0];
       int regRowid;
@@ -148903,6 +148908,7 @@ static SQLITE_NOINLINE void filterPullDown(
       VdbeCoverage(pParse->pVdbe);
     }
     pLevel->regFilter = 0;
+    pLevel->addrBrk = 0;
   }
 }
 
@@ -234497,7 +234503,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2022-04-27 12:03:15 9547e2c38a1c6f751a77d4d796894dec4dc5d8f5d79b1cd39e1ffc50df7b3be4", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2022-05-04 15:45:55 d402f49871152670a62f4f28cacb15d814f2c1644e9347ad7d258e562978e45e", -1, SQLITE_TRANSIENT);
 }
 
 /*
