@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.39.1.  By combining all the individual C code files into this
+** version 3.39.2.  By combining all the individual C code files into this
 ** single large file, the entire code can be compiled as a single translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -452,9 +452,9 @@ extern "C" {
 ** [sqlite3_libversion_number()], [sqlite3_sourceid()],
 ** [sqlite_version()] and [sqlite_source_id()].
 */
-#define SQLITE_VERSION        "3.39.1"
-#define SQLITE_VERSION_NUMBER 3039001
-#define SQLITE_SOURCE_ID      "2022-07-13 19:41:41 7c16541a0efb3985578181171c9f2bb3fdc4bad6a2ec85c6e31ab96f3eff201f"
+#define SQLITE_VERSION        "3.39.2"
+#define SQLITE_VERSION_NUMBER 3039002
+#define SQLITE_SOURCE_ID      "2022-07-21 15:24:47 698edb77537b67c41adc68f9b892db56bcf9a55e00371a61420f3ddd668e6603"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -30430,8 +30430,8 @@ SQLITE_API void sqlite3_str_vappendf(
       case etSQLESCAPE:           /* %q: Escape ' characters */
       case etSQLESCAPE2:          /* %Q: Escape ' and enclose in '...' */
       case etSQLESCAPE3: {        /* %w: Escape " characters */
-        int i, j, k, n, isnull;
-        int needQuote;
+        i64 i, j, k, n;
+        int needQuote, isnull;
         char ch;
         char q = ((xtype==etSQLESCAPE3)?'"':'\'');   /* Quote character */
         char *escarg;
@@ -31119,8 +31119,8 @@ SQLITE_PRIVATE void sqlite3TreeViewColumnList(
   sqlite3TreeViewLine(pView, "COLUMNS");
   for(i=0; i<nCol; i++){
     u16 flg = aCol[i].colFlags;
-    int moreToFollow = i<(nCol - 1);
-    sqlite3TreeViewPush(&pView, moreToFollow);
+    int colMoreToFollow = i<(nCol - 1);
+    sqlite3TreeViewPush(&pView, colMoreToFollow);
     sqlite3TreeViewLine(pView, 0);
     printf(" %s", aCol[i].zCnName);
     switch( aCol[i].eCType ){
@@ -31251,7 +31251,7 @@ SQLITE_PRIVATE void sqlite3TreeViewSrcList(TreeView *pView, const SrcList *pSrc)
         Table *pTab = pItem->pTab;
         sqlite3TreeViewColumnList(pView, pTab->aCol, pTab->nCol, 1);
       }
-      assert( pItem->fg.isNestedFrom == IsNestedFrom(pItem->pSelect) );
+      assert( (int)pItem->fg.isNestedFrom == IsNestedFrom(pItem->pSelect) );
       sqlite3TreeViewSelect(pView, pItem->pSelect, (--n)>0);
     }
     if( pItem->fg.isTabFunc ){
@@ -101540,33 +101540,23 @@ static void resolveAlias(
     sqlite3ExprDelete(db, pDup);
     pDup = 0;
   }else{
+    Expr temp;
     incrAggFunctionDepth(pDup, nSubquery);
     if( pExpr->op==TK_COLLATE ){
       assert( !ExprHasProperty(pExpr, EP_IntValue) );
       pDup = sqlite3ExprAddCollateString(pParse, pDup, pExpr->u.zToken);
     }
-
-    /* Before calling sqlite3ExprDelete(), set the EP_Static flag. This
-    ** prevents ExprDelete() from deleting the Expr structure itself,
-    ** allowing it to be repopulated by the memcpy() on the following line.
-    ** The pExpr->u.zToken might point into memory that will be freed by the
-    ** sqlite3DbFree(db, pDup) on the last line of this block, so be sure to
-    ** make a copy of the token before doing the sqlite3DbFree().
-    */
-    ExprSetProperty(pExpr, EP_Static);
-    sqlite3ExprDelete(db, pExpr);
-    memcpy(pExpr, pDup, sizeof(*pExpr));
-    if( !ExprHasProperty(pExpr, EP_IntValue) && pExpr->u.zToken!=0 ){
-      assert( (pExpr->flags & (EP_Reduced|EP_TokenOnly))==0 );
-      pExpr->u.zToken = sqlite3DbStrDup(db, pExpr->u.zToken);
-      pExpr->flags |= EP_MemToken;
-    }
+    memcpy(&temp, pDup, sizeof(Expr));
+    memcpy(pDup, pExpr, sizeof(Expr));
+    memcpy(pExpr, &temp, sizeof(Expr));
     if( ExprHasProperty(pExpr, EP_WinFunc) ){
       if( ALWAYS(pExpr->y.pWin!=0) ){
         pExpr->y.pWin->pOwner = pExpr;
       }
     }
-    sqlite3DbFree(db, pDup);
+    sqlite3ParserAddCleanup(pParse,
+      (void(*)(sqlite3*,void*))sqlite3ExprDelete,
+      pDup);
   }
 }
 
@@ -101769,7 +101759,7 @@ static int lookupName(
         pTab = pItem->pTab;
         assert( pTab!=0 && pTab->zName!=0 );
         assert( pTab->nCol>0 || pParse->nErr );
-        assert( pItem->fg.isNestedFrom == IsNestedFrom(pItem->pSelect) );
+        assert( (int)pItem->fg.isNestedFrom == IsNestedFrom(pItem->pSelect) );
         if( pItem->fg.isNestedFrom ){
           /* In this case, pItem is a subquery that has been formed from a
           ** parenthesized subset of the FROM clause terms.  Example:
@@ -135859,7 +135849,7 @@ SQLITE_PRIVATE int sqlite3ColumnIndex(Table *pTab, const char *zCol){
 */
 SQLITE_PRIVATE void sqlite3SrcItemColumnUsed(SrcItem *pItem, int iCol){
   assert( pItem!=0 );
-  assert( pItem->fg.isNestedFrom == IsNestedFrom(pItem->pSelect) );
+  assert( (int)pItem->fg.isNestedFrom == IsNestedFrom(pItem->pSelect) );
   if( pItem->fg.isNestedFrom ){
     ExprList *pResults;
     assert( pItem->pSelect!=0 );
@@ -141446,7 +141436,7 @@ static int selectExpander(Walker *pWalker, Select *p){
             zTabName = pTab->zName;
           }
           if( db->mallocFailed ) break;
-          assert( pFrom->fg.isNestedFrom == IsNestedFrom(pFrom->pSelect) );
+          assert( (int)pFrom->fg.isNestedFrom == IsNestedFrom(pFrom->pSelect) );
           if( pFrom->fg.isNestedFrom ){
             assert( pFrom->pSelect!=0 );
             pNestedFrom = pFrom->pSelect->pEList;
@@ -142375,7 +142365,9 @@ SQLITE_PRIVATE int sqlite3Select(
     ){
       SELECTTRACE(0x100,pParse,p,
                 ("omit superfluous ORDER BY on %r FROM-clause subquery\n",i+1));
-      sqlite3ExprListDelete(db, pSub->pOrderBy);
+      sqlite3ParserAddCleanup(pParse,
+         (void(*)(sqlite3*,void*))sqlite3ExprListDelete,
+         pSub->pOrderBy);
       pSub->pOrderBy = 0;
     }
 
@@ -155375,7 +155367,7 @@ static int whereKeyStats(
 #endif
   assert( pRec!=0 );
   assert( pIdx->nSample>0 );
-  assert( pRec->nField>0 && pRec->nField<=pIdx->nSampleCol );
+  assert( pRec->nField>0 );
 
   /* Do a binary search to find the first sample greater than or equal
   ** to pRec. If pRec contains a single field, the set of samples to search
@@ -155421,7 +155413,7 @@ static int whereKeyStats(
   ** it is extended to two fields. The duplicates that this creates do not
   ** cause any problems.
   */
-  nField = pRec->nField;
+  nField = MIN(pRec->nField, pIdx->nSample);
   iCol = 0;
   iSample = pIdx->nSample * nField;
   do{
@@ -158110,6 +158102,7 @@ static int whereLoopAddAll(WhereLoopBuilder *pBuilder){
   sqlite3 *db = pWInfo->pParse->db;
   int rc = SQLITE_OK;
   int bFirstPastRJ = 0;
+  int hasRightJoin = 0;
   WhereLoop *pNew;
 
 
@@ -158130,15 +158123,16 @@ static int whereLoopAddAll(WhereLoopBuilder *pBuilder){
       ** prevents the right operand of a RIGHT JOIN from being swapped with
       ** other elements even further to the right.
       **
-      ** The JT_LTORJ term prevents any FROM-clause term reordering for terms
-      ** to the left of a RIGHT JOIN.  This is conservative.  Relaxing this
-      ** constraint somewhat to prevent terms from crossing from the right
-      ** side of a LEFT JOIN over to the left side when they are on the
-      ** left side of a RIGHT JOIN would be sufficient for all known failure
-      ** cases.  FIX ME: Implement this optimization.
+      ** The JT_LTORJ case and the hasRightJoin flag work together to
+      ** prevent FROM-clause terms from moving from the right side of
+      ** a LEFT JOIN over to the left side of that join if the LEFT JOIN
+      ** is itself on the left side of a RIGHT JOIN.
       */
+      if( pItem->fg.jointype & JT_LTORJ ) hasRightJoin = 1;
       mPrereq |= mPrior;
       bFirstPastRJ = (pItem->fg.jointype & JT_RIGHT)!=0;
+    }else if( !hasRightJoin ){
+      mPrereq = 0;
     }
 #ifndef SQLITE_OMIT_VIRTUALTABLE
     if( IsVirtual(pItem->pTab) ){
@@ -181058,8 +181052,7 @@ static int fts3EvalDeferredPhrase(Fts3Cursor *pCsr, Fts3Phrase *pPhrase){
   char *aPoslist = 0;             /* Position list for deferred tokens */
   int nPoslist = 0;               /* Number of bytes in aPoslist */
   int iPrev = -1;                 /* Token number of previous deferred token */
-
-  assert( pPhrase->doclist.bFreeList==0 );
+  char *aFree = (pPhrase->doclist.bFreeList ? pPhrase->doclist.pList : 0);
 
   for(iToken=0; iToken<pPhrase->nToken; iToken++){
     Fts3PhraseToken *pToken = &pPhrase->aToken[iToken];
@@ -181073,6 +181066,7 @@ static int fts3EvalDeferredPhrase(Fts3Cursor *pCsr, Fts3Phrase *pPhrase){
 
       if( pList==0 ){
         sqlite3_free(aPoslist);
+        sqlite3_free(aFree);
         pPhrase->doclist.pList = 0;
         pPhrase->doclist.nList = 0;
         return SQLITE_OK;
@@ -181093,6 +181087,7 @@ static int fts3EvalDeferredPhrase(Fts3Cursor *pCsr, Fts3Phrase *pPhrase){
         nPoslist = (int)(aOut - aPoslist);
         if( nPoslist==0 ){
           sqlite3_free(aPoslist);
+          sqlite3_free(aFree);
           pPhrase->doclist.pList = 0;
           pPhrase->doclist.nList = 0;
           return SQLITE_OK;
@@ -181145,6 +181140,7 @@ static int fts3EvalDeferredPhrase(Fts3Cursor *pCsr, Fts3Phrase *pPhrase){
     }
   }
 
+  if( pPhrase->doclist.pList!=aFree ) sqlite3_free(aFree);
   return SQLITE_OK;
 }
 #endif /* SQLITE_DISABLE_FTS4_DEFERRED */
@@ -182323,7 +182319,6 @@ static int fts3EvalTestExpr(
             pExpr->iDocid==pCsr->iPrevId && pExpr->pPhrase->doclist.pList
         ))){
           Fts3Phrase *pPhrase = pExpr->pPhrase;
-          assert( pExpr->bDeferred || pPhrase->doclist.bFreeList==0 );
           if( pExpr->bDeferred ){
             fts3EvalInvalidatePoslist(pPhrase);
           }
@@ -236641,7 +236636,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2022-07-13 19:41:41 7c16541a0efb3985578181171c9f2bb3fdc4bad6a2ec85c6e31ab96f3eff201f", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2022-07-21 15:24:47 698edb77537b67c41adc68f9b892db56bcf9a55e00371a61420f3ddd668e6603", -1, SQLITE_TRANSIENT);
 }
 
 /*
