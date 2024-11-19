@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.39.0.  By combining all the individual C code files into this
+** version 3.39.1.  By combining all the individual C code files into this
 ** single large file, the entire code can be compiled as a single translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -452,9 +452,9 @@ extern "C" {
 ** [sqlite3_libversion_number()], [sqlite3_sourceid()],
 ** [sqlite_version()] and [sqlite_source_id()].
 */
-#define SQLITE_VERSION        "3.39.0"
-#define SQLITE_VERSION_NUMBER 3039000
-#define SQLITE_SOURCE_ID      "2022-06-25 14:57:57 14e166f40dbfa6e055543f8301525f2ca2e96a02a57269818b9e69e162e98918"
+#define SQLITE_VERSION        "3.39.1"
+#define SQLITE_VERSION_NUMBER 3039001
+#define SQLITE_SOURCE_ID      "2022-07-13 19:41:41 7c16541a0efb3985578181171c9f2bb3fdc4bad6a2ec85c6e31ab96f3eff201f"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -6588,7 +6588,7 @@ SQLITE_API sqlite3 *sqlite3_db_handle(sqlite3_stmt*);
 **
 ** ^The sqlite3_db_name(D,N) interface returns a pointer to the schema name
 ** for the N-th database on database connection D, or a NULL pointer of N is
-** out of range.  An N alue of 0 means the main database file.  An N of 1 is
+** out of range.  An N value of 0 means the main database file.  An N of 1 is
 ** the "temp" schema.  Larger values of N correspond to various ATTACH-ed
 ** databases.
 **
@@ -19779,6 +19779,7 @@ SQLITE_PRIVATE   void sqlite3TreeViewSrcList(TreeView*, const SrcList*);
 SQLITE_PRIVATE   void sqlite3TreeViewSelect(TreeView*, const Select*, u8);
 SQLITE_PRIVATE   void sqlite3TreeViewWith(TreeView*, const With*, u8);
 SQLITE_PRIVATE   void sqlite3TreeViewUpsert(TreeView*, const Upsert*, u8);
+#if TREETRACE_ENABLED
 SQLITE_PRIVATE   void sqlite3TreeViewDelete(const With*, const SrcList*, const Expr*,
                              const ExprList*,const Expr*, const Trigger*);
 SQLITE_PRIVATE   void sqlite3TreeViewInsert(const With*, const SrcList*,
@@ -19787,6 +19788,7 @@ SQLITE_PRIVATE   void sqlite3TreeViewInsert(const With*, const SrcList*,
 SQLITE_PRIVATE   void sqlite3TreeViewUpdate(const With*, const SrcList*, const ExprList*,
                              const Expr*, int, const ExprList*, const Expr*,
                              const Upsert*, const Trigger*);
+#endif
 #ifndef SQLITE_OMIT_TRIGGER
 SQLITE_PRIVATE   void sqlite3TreeViewTriggerStep(TreeView*, const TriggerStep*, u8, u8);
 SQLITE_PRIVATE   void sqlite3TreeViewTrigger(TreeView*, const Trigger*, u8, u8);
@@ -32016,6 +32018,7 @@ SQLITE_PRIVATE void sqlite3TreeViewUpsert(
   sqlite3TreeViewPop(&pView);
 }
 
+#if TREETRACE_ENABLED
 /*
 ** Generate a human-readable diagram of the data structure that go
 ** into generating an DELETE statement.
@@ -32069,7 +32072,9 @@ SQLITE_PRIVATE void sqlite3TreeViewDelete(
   }
   sqlite3TreeViewPop(&pView);
 }
+#endif /* TREETRACE_ENABLED */
 
+#if TREETRACE_ENABLED
 /*
 ** Generate a human-readable diagram of the data structure that go
 ** into generating an INSERT statement.
@@ -32137,7 +32142,9 @@ SQLITE_PRIVATE void sqlite3TreeViewInsert(
   }
   sqlite3TreeViewPop(&pView);
 }
+#endif /* TREETRACE_ENABLED */
 
+#if TREETRACE_ENABLED
 /*
 ** Generate a human-readable diagram of the data structure that go
 ** into generating an UPDATE statement.
@@ -32213,6 +32220,7 @@ SQLITE_PRIVATE void sqlite3TreeViewUpdate(
   }
   sqlite3TreeViewPop(&pView);
 }
+#endif /* TREETRACE_ENABLED */
 
 #ifndef SQLITE_OMIT_TRIGGER
 /*
@@ -115451,8 +115459,6 @@ SQLITE_PRIVATE void sqlite3NestedParse(Parse *pParse, const char *zFormat, ...){
   memset(PARSE_TAIL(pParse), 0, PARSE_TAIL_SZ);
   db->mDbFlags |= DBFLAG_PreferBuiltin;
   sqlite3RunParser(pParse, zSql);
-  sqlite3DbFree(db, pParse->zErrMsg);
-  pParse->zErrMsg = 0;
   db->mDbFlags = savedDbFlags;
   sqlite3DbFree(db, zSql);
   memcpy(PARSE_TAIL(pParse), saveBuf, PARSE_TAIL_SZ);
@@ -139651,6 +139657,9 @@ static void renumberCursors(
 **              (17d2) DISTINCT
 **        (17e) the subquery may not contain window functions, and
 **        (17f) the subquery must not be the RHS of a LEFT JOIN.
+**        (17g) either the subquery is the first element of the outer
+**              query or there are no RIGHT or FULL JOINs in any arm
+**              of the subquery.  (This is a duplicate of condition (27b).)
 **
 **        The parent and sub-query may contain WHERE clauses. Subject to
 **        rules (11), (13) and (14), they may also contain ORDER BY,
@@ -139702,7 +139711,11 @@ static void renumberCursors(
 **        See also (3) for restrictions on LEFT JOIN.
 **
 **  (27)  The subquery may not contain a FULL or RIGHT JOIN unless it
-**        is the first element of the parent query.
+**        is the first element of the parent query.  This must be the
+**        the case if:
+**        (27a) the subquery is not compound query, and
+**        (27b) the subquery is a compound query and the RIGHT JOIN occurs
+**              in any arm of the compound query.  (See also (17g).)
 **
 **  (28)  The subquery is not a MATERIALIZED CTE.
 **
@@ -139832,7 +139845,7 @@ static int flattenSubquery(
 
   assert( pSubSrc->nSrc>0 );  /* True by restriction (7) */
   if( iFrom>0 && (pSubSrc->a[0].fg.jointype & JT_LTORJ)!=0 ){
-    return 0;   /* Restriction (27) */
+    return 0;   /* Restriction (27a) */
   }
   if( pSubitem->fg.isCte && pSubitem->u2.pCteUse->eM10d==M10d_Yes ){
     return 0;       /* (28) */
@@ -139852,7 +139865,7 @@ static int flattenSubquery(
   **          NATURAL join or a join that as an ON or USING clause.
   **
   ** These conditions are sufficient to keep an EP_OuterON from being
-  ** flattened into an EP_InnerON.  Restrictions (3a) and (27) prevent
+  ** flattened into an EP_InnerON.  Restrictions (3a) and (27a) prevent
   ** an EP_InnerON from being flattened into an EP_OuterON.
   */
   if( pSubSrc->nSrc>=2
@@ -139893,6 +139906,12 @@ static int flattenSubquery(
 #endif
       ){
         return 0;
+      }
+      if( iFrom>0 && (pSub1->pSrc->a[0].fg.jointype & JT_LTORJ)!=0 ){
+        /* Without this restriction, the JT_LTORJ flag would end up being
+        ** omitted on left-hand tables of the right join that is being
+        ** flattened. */
+        return 0;   /* Restrictions (17g), (27b) */
       }
       testcase( pSub1->pSrc->nSrc>1 );
     }
@@ -169960,6 +169979,7 @@ SQLITE_PRIVATE int sqlite3RunParser(Parse *pParse, const char *zSql){
     mxSqlLen -= n;
     if( mxSqlLen<0 ){
       pParse->rc = SQLITE_TOOBIG;
+      pParse->nErr++;
       break;
     }
 #ifndef SQLITE_OMIT_WINDOWFUNC
@@ -174700,8 +174720,11 @@ SQLITE_API int sqlite3_test_control(int op, ...){
         sqlite3ShowTriggerStepList(0);
         sqlite3ShowTrigger(0);
         sqlite3ShowTriggerList(0);
+#ifndef SQLITE_OMIT_WINDOWFUNC
         sqlite3ShowWindow(0);
         sqlite3ShowWinFunc(0);
+#endif
+        sqlite3ShowSelect(0);
       }
 #endif
       break;
@@ -181109,6 +181132,7 @@ static int fts3EvalDeferredPhrase(Fts3Cursor *pCsr, Fts3Phrase *pPhrase){
       }
 
       pPhrase->doclist.pList = aOut;
+      assert( p1 && p2 );
       if( fts3PoslistPhraseMerge(&aOut, nDistance, 0, 1, &p1, &p2) ){
         pPhrase->doclist.bFreeList = 1;
         pPhrase->doclist.nList = (int)(aOut - pPhrase->doclist.pList);
@@ -182295,9 +182319,9 @@ static int fts3EvalTestExpr(
 
       default: {
 #ifndef SQLITE_DISABLE_FTS4_DEFERRED
-        if( pCsr->pDeferred
-         && (pExpr->iDocid==pCsr->iPrevId || pExpr->bDeferred)
-        ){
+        if( pCsr->pDeferred && (pExpr->bDeferred || (
+            pExpr->iDocid==pCsr->iPrevId && pExpr->pPhrase->doclist.pList
+        ))){
           Fts3Phrase *pPhrase = pExpr->pPhrase;
           assert( pExpr->bDeferred || pPhrase->doclist.bFreeList==0 );
           if( pExpr->bDeferred ){
@@ -236617,7 +236641,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2022-06-25 14:57:57 14e166f40dbfa6e055543f8301525f2ca2e96a02a57269818b9e69e162e98918", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2022-07-13 19:41:41 7c16541a0efb3985578181171c9f2bb3fdc4bad6a2ec85c6e31ab96f3eff201f", -1, SQLITE_TRANSIENT);
 }
 
 /*
@@ -241288,6 +241312,16 @@ SQLITE_EXTENSION_INIT1
 
 #ifndef SQLITE_OMIT_VIRTUALTABLE
 
+
+#define STMT_NUM_INTEGER_COLUMN 10
+typedef struct StmtRow StmtRow;
+struct StmtRow {
+  sqlite3_int64 iRowid;                /* Rowid value */
+  char *zSql;                          /* column "sql" */
+  int aCol[STMT_NUM_INTEGER_COLUMN+1]; /* all other column values */
+  StmtRow *pNext;                      /* Next row to return */
+};
+
 /* stmt_vtab is a subclass of sqlite3_vtab which will
 ** serve as the underlying representation of a stmt virtual table
 */
@@ -241305,8 +241339,7 @@ typedef struct stmt_cursor stmt_cursor;
 struct stmt_cursor {
   sqlite3_vtab_cursor base;  /* Base class - must be first */
   sqlite3 *db;               /* Database connection for this cursor */
-  sqlite3_stmt *pStmt;       /* Statement cursor is currently pointing at */
-  sqlite3_int64 iRowid;      /* The rowid */
+  StmtRow *pRow;             /* Current row */
 };
 
 /*
@@ -241350,7 +241383,7 @@ static int stmtConnect(
      "CREATE TABLE x(sql,ncol,ro,busy,nscan,nsort,naidx,nstep,"
                     "reprep,run,mem)");
   if( rc==SQLITE_OK ){
-    pNew = sqlite3_malloc( sizeof(*pNew) );
+    pNew = sqlite3_malloc64( sizeof(*pNew) );
     *ppVtab = (sqlite3_vtab*)pNew;
     if( pNew==0 ) return SQLITE_NOMEM;
     memset(pNew, 0, sizeof(*pNew));
@@ -241372,7 +241405,7 @@ static int stmtDisconnect(sqlite3_vtab *pVtab){
 */
 static int stmtOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
   stmt_cursor *pCur;
-  pCur = sqlite3_malloc( sizeof(*pCur) );
+  pCur = sqlite3_malloc64( sizeof(*pCur) );
   if( pCur==0 ) return SQLITE_NOMEM;
   memset(pCur, 0, sizeof(*pCur));
   pCur->db = ((stmt_vtab*)p)->db;
@@ -241380,10 +241413,21 @@ static int stmtOpen(sqlite3_vtab *p, sqlite3_vtab_cursor **ppCursor){
   return SQLITE_OK;
 }
 
+static void stmtCsrReset(stmt_cursor *pCur){
+  StmtRow *pRow = 0;
+  StmtRow *pNext = 0;
+  for(pRow=pCur->pRow; pRow; pRow=pNext){
+    pNext = pRow->pNext;
+    sqlite3_free(pRow);
+  }
+  pCur->pRow = 0;
+}
+
 /*
 ** Destructor for a stmt_cursor.
 */
 static int stmtClose(sqlite3_vtab_cursor *cur){
+  stmtCsrReset((stmt_cursor*)cur);
   sqlite3_free(cur);
   return SQLITE_OK;
 }
@@ -241394,8 +241438,9 @@ static int stmtClose(sqlite3_vtab_cursor *cur){
 */
 static int stmtNext(sqlite3_vtab_cursor *cur){
   stmt_cursor *pCur = (stmt_cursor*)cur;
-  pCur->iRowid++;
-  pCur->pStmt = sqlite3_next_stmt(pCur->db, pCur->pStmt);
+  StmtRow *pNext = pCur->pRow->pNext;
+  sqlite3_free(pCur->pRow);
+  pCur->pRow = pNext;
   return SQLITE_OK;
 }
 
@@ -241409,39 +241454,11 @@ static int stmtColumn(
   int i                       /* Which column to return */
 ){
   stmt_cursor *pCur = (stmt_cursor*)cur;
-  switch( i ){
-    case STMT_COLUMN_SQL: {
-      sqlite3_result_text(ctx, sqlite3_sql(pCur->pStmt), -1, SQLITE_TRANSIENT);
-      break;
-    }
-    case STMT_COLUMN_NCOL: {
-      sqlite3_result_int(ctx, sqlite3_column_count(pCur->pStmt));
-      break;
-    }
-    case STMT_COLUMN_RO: {
-      sqlite3_result_int(ctx, sqlite3_stmt_readonly(pCur->pStmt));
-      break;
-    }
-    case STMT_COLUMN_BUSY: {
-      sqlite3_result_int(ctx, sqlite3_stmt_busy(pCur->pStmt));
-      break;
-    }
-    default: {
-      assert( i==STMT_COLUMN_MEM );
-      i = SQLITE_STMTSTATUS_MEMUSED +
-            STMT_COLUMN_NSCAN - SQLITE_STMTSTATUS_FULLSCAN_STEP;
-      /* Fall thru */
-    }
-    case STMT_COLUMN_NSCAN:
-    case STMT_COLUMN_NSORT:
-    case STMT_COLUMN_NAIDX:
-    case STMT_COLUMN_NSTEP:
-    case STMT_COLUMN_REPREP:
-    case STMT_COLUMN_RUN: {
-      sqlite3_result_int(ctx, sqlite3_stmt_status(pCur->pStmt,
-                      i-STMT_COLUMN_NSCAN+SQLITE_STMTSTATUS_FULLSCAN_STEP, 0));
-      break;
-    }
+  StmtRow *pRow = pCur->pRow;
+  if( i==STMT_COLUMN_SQL ){
+    sqlite3_result_text(ctx, pRow->zSql, -1, SQLITE_TRANSIENT);
+  }else{
+    sqlite3_result_int(ctx, pRow->aCol[i]);
   }
   return SQLITE_OK;
 }
@@ -241452,7 +241469,7 @@ static int stmtColumn(
 */
 static int stmtRowid(sqlite3_vtab_cursor *cur, sqlite_int64 *pRowid){
   stmt_cursor *pCur = (stmt_cursor*)cur;
-  *pRowid = pCur->iRowid;
+  *pRowid = pCur->pRow->iRowid;
   return SQLITE_OK;
 }
 
@@ -241462,7 +241479,7 @@ static int stmtRowid(sqlite3_vtab_cursor *cur, sqlite_int64 *pRowid){
 */
 static int stmtEof(sqlite3_vtab_cursor *cur){
   stmt_cursor *pCur = (stmt_cursor*)cur;
-  return pCur->pStmt==0;
+  return pCur->pRow==0;
 }
 
 /*
@@ -241477,9 +241494,53 @@ static int stmtFilter(
   int argc, sqlite3_value **argv
 ){
   stmt_cursor *pCur = (stmt_cursor *)pVtabCursor;
-  pCur->pStmt = 0;
-  pCur->iRowid = 0;
-  return stmtNext(pVtabCursor);
+  sqlite3_stmt *p = 0;
+  sqlite3_int64 iRowid = 1;
+  StmtRow **ppRow = 0;
+
+  stmtCsrReset(pCur);
+  ppRow = &pCur->pRow;
+  for(p=sqlite3_next_stmt(pCur->db, 0); p; p=sqlite3_next_stmt(pCur->db, p)){
+    const char *zSql = sqlite3_sql(p);
+    sqlite3_int64 nSql = zSql ? strlen(zSql)+1 : 0;
+    StmtRow *pNew = (StmtRow*)sqlite3_malloc64(sizeof(StmtRow) + nSql);
+
+    if( pNew==0 ) return SQLITE_NOMEM;
+    memset(pNew, 0, sizeof(StmtRow));
+    if( zSql ){
+      pNew->zSql = (char*)&pNew[1];
+      memcpy(pNew->zSql, zSql, nSql);
+    }
+    pNew->aCol[STMT_COLUMN_NCOL] = sqlite3_column_count(p);
+    pNew->aCol[STMT_COLUMN_RO] = sqlite3_stmt_readonly(p);
+    pNew->aCol[STMT_COLUMN_BUSY] = sqlite3_stmt_busy(p);
+    pNew->aCol[STMT_COLUMN_NSCAN] = sqlite3_stmt_status(
+        p, SQLITE_STMTSTATUS_FULLSCAN_STEP, 0
+    );
+    pNew->aCol[STMT_COLUMN_NSORT] = sqlite3_stmt_status(
+        p, SQLITE_STMTSTATUS_SORT, 0
+    );
+    pNew->aCol[STMT_COLUMN_NAIDX] = sqlite3_stmt_status(
+        p, SQLITE_STMTSTATUS_AUTOINDEX, 0
+    );
+    pNew->aCol[STMT_COLUMN_NSTEP] = sqlite3_stmt_status(
+        p, SQLITE_STMTSTATUS_VM_STEP, 0
+    );
+    pNew->aCol[STMT_COLUMN_REPREP] = sqlite3_stmt_status(
+        p, SQLITE_STMTSTATUS_REPREPARE, 0
+    );
+    pNew->aCol[STMT_COLUMN_RUN] = sqlite3_stmt_status(
+        p, SQLITE_STMTSTATUS_RUN, 0
+    );
+    pNew->aCol[STMT_COLUMN_MEM] = sqlite3_stmt_status(
+        p, SQLITE_STMTSTATUS_MEMUSED, 0
+    );
+    pNew->iRowid = iRowid++;
+    *ppRow = pNew;
+    ppRow = &pNew->pNext;
+  }
+
+  return SQLITE_OK;
 }
 
 /*
