@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.38.1.  By combining all the individual C code files into this
+** version 3.38.2.  By combining all the individual C code files into this
 ** single large file, the entire code can be compiled as a single translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -452,9 +452,9 @@ extern "C" {
 ** [sqlite3_libversion_number()], [sqlite3_sourceid()],
 ** [sqlite_version()] and [sqlite_source_id()].
 */
-#define SQLITE_VERSION        "3.38.1"
-#define SQLITE_VERSION_NUMBER 3038001
-#define SQLITE_SOURCE_ID      "2022-03-12 13:37:29 38c210fdd258658321c85ec9c01a072fda3ada94540e3239d29b34dc547a8cbc"
+#define SQLITE_VERSION        "3.38.2"
+#define SQLITE_VERSION_NUMBER 3038002
+#define SQLITE_SOURCE_ID      "2022-03-26 13:51:10 d33c709cc0af66bc5b6dc6216eba9f1f0b40960b9ae83694c986fbf4c1d6f08f"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -39691,11 +39691,17 @@ static int unixShmLock(
   int flags                  /* What to do with the lock */
 ){
   unixFile *pDbFd = (unixFile*)fd;      /* Connection holding shared memory */
-  unixShm *p = pDbFd->pShm;             /* The shared memory being locked */
-  unixShmNode *pShmNode = p->pShmNode;  /* The underlying file iNode */
+  unixShm *p;                           /* The shared memory being locked */
+  unixShmNode *pShmNode;                /* The underlying file iNode */
   int rc = SQLITE_OK;                   /* Result code */
   u16 mask;                             /* Mask of locks to take or release */
-  int *aLock = pShmNode->aLock;
+  int *aLock;
+
+  p = pDbFd->pShm;
+  if( p==0 ) return SQLITE_IOERR_SHMLOCK;
+  pShmNode = p->pShmNode;
+  if( NEVER(pShmNode==0) ) return SQLITE_IOERR_SHMLOCK;
+  aLock = pShmNode->aLock;
 
   assert( pShmNode==pDbFd->pInode->pShmNode );
   assert( pShmNode->pInode==pDbFd->pInode );
@@ -46983,9 +46989,13 @@ static int winShmLock(
   winFile *pDbFd = (winFile*)fd;        /* Connection holding shared memory */
   winShm *p = pDbFd->pShm;              /* The shared memory being locked */
   winShm *pX;                           /* For looping over all siblings */
-  winShmNode *pShmNode = p->pShmNode;
+  winShmNode *pShmNode;
   int rc = SQLITE_OK;                   /* Result code */
   u16 mask;                             /* Mask of locks to take or release */
+
+  if( p==0 ) return SQLITE_IOERR_SHMLOCK;
+  pShmNode = p->pShmNode;
+  if( NEVER(pShmNode==0) ) return SQLITE_IOERR_SHMLOCK;
 
   assert( ofst>=0 && ofst+n<=SQLITE_SHM_NLOCK );
   assert( n>=1 );
@@ -74993,24 +75003,6 @@ SQLITE_PRIVATE int sqlite3BtreeInsert(
   assert( (flags & (BTREE_SAVEPOSITION|BTREE_APPEND|BTREE_PREFORMAT))==flags );
   assert( (flags & BTREE_PREFORMAT)==0 || seekResult || pCur->pKeyInfo==0 );
 
-  if( pCur->eState==CURSOR_FAULT ){
-    assert( pCur->skipNext!=SQLITE_OK );
-    return pCur->skipNext;
-  }
-
-  assert( cursorOwnsBtShared(pCur) );
-  assert( (pCur->curFlags & BTCF_WriteFlag)!=0
-              && pBt->inTransaction==TRANS_WRITE
-              && (pBt->btsFlags & BTS_READ_ONLY)==0 );
-  assert( hasSharedCacheTableLock(p, pCur->pgnoRoot, pCur->pKeyInfo!=0, 2) );
-
-  /* Assert that the caller has been consistent. If this cursor was opened
-  ** expecting an index b-tree, then the caller should be inserting blob
-  ** keys with no associated data. If the cursor was opened expecting an
-  ** intkey table, the caller should be inserting integer keys with a
-  ** blob of associated data.  */
-  assert( (flags & BTREE_PREFORMAT) || (pX->pKey==0)==(pCur->pKeyInfo==0) );
-
   /* Save the positions of any other cursors open on this table.
   **
   ** In some cases, the call to btreeMoveto() below is a no-op. For
@@ -75034,6 +75026,24 @@ SQLITE_PRIVATE int sqlite3BtreeInsert(
       return SQLITE_CORRUPT_BKPT;
     }
   }
+
+  if( pCur->eState>=CURSOR_REQUIRESEEK ){
+    rc = moveToRoot(pCur);
+    if( rc && rc!=SQLITE_EMPTY ) return rc;
+  }
+
+  assert( cursorOwnsBtShared(pCur) );
+  assert( (pCur->curFlags & BTCF_WriteFlag)!=0
+              && pBt->inTransaction==TRANS_WRITE
+              && (pBt->btsFlags & BTS_READ_ONLY)==0 );
+  assert( hasSharedCacheTableLock(p, pCur->pgnoRoot, pCur->pKeyInfo!=0, 2) );
+
+  /* Assert that the caller has been consistent. If this cursor was opened
+  ** expecting an index b-tree, then the caller should be inserting blob
+  ** keys with no associated data. If the cursor was opened expecting an
+  ** intkey table, the caller should be inserting integer keys with a
+  ** blob of associated data.  */
+  assert( (flags & BTREE_PREFORMAT) || (pX->pKey==0)==(pCur->pKeyInfo==0) );
 
   if( pCur->pKeyInfo==0 ){
     assert( pX->pKey==0 );
@@ -75123,8 +75133,7 @@ SQLITE_PRIVATE int sqlite3BtreeInsert(
     }
   }
   assert( pCur->eState==CURSOR_VALID
-       || (pCur->eState==CURSOR_INVALID && loc)
-       || CORRUPT_DB );
+       || (pCur->eState==CURSOR_INVALID && loc) );
 
   pPage = pCur->pPage;
   assert( pPage->intKey || pX->nKey>=0 || (flags & BTREE_PREFORMAT) );
@@ -75411,12 +75420,16 @@ SQLITE_PRIVATE int sqlite3BtreeDelete(BtCursor *pCur, u8 flags){
   assert( hasSharedCacheTableLock(p, pCur->pgnoRoot, pCur->pKeyInfo!=0, 2) );
   assert( !hasReadConflicts(p, pCur->pgnoRoot) );
   assert( (flags & ~(BTREE_SAVEPOSITION | BTREE_AUXDELETE))==0 );
-  if( pCur->eState==CURSOR_REQUIRESEEK ){
-    rc = btreeRestoreCursorPosition(pCur);
-    assert( rc!=SQLITE_OK || CORRUPT_DB || pCur->eState==CURSOR_VALID );
-    if( rc || pCur->eState!=CURSOR_VALID ) return rc;
+  if( pCur->eState!=CURSOR_VALID ){
+    if( pCur->eState>=CURSOR_REQUIRESEEK ){
+      rc = btreeRestoreCursorPosition(pCur);
+      assert( rc!=SQLITE_OK || CORRUPT_DB || pCur->eState==CURSOR_VALID );
+      if( rc || pCur->eState!=CURSOR_VALID ) return rc;
+    }else{
+      return SQLITE_CORRUPT_BKPT;
+    }
   }
-  assert( CORRUPT_DB || pCur->eState==CURSOR_VALID );
+  assert( pCur->eState==CURSOR_VALID );
 
   iCellDepth = pCur->iPage;
   iCellIdx = pCur->ix;
@@ -125098,7 +125111,7 @@ SQLITE_PRIVATE void sqlite3TableAffinity(Vdbe *v, Table *pTab, int iReg){
     }
 
     for(i=j=0; i<pTab->nCol; i++){
-      assert( pTab->aCol[i].affinity!=0 );
+      assert( pTab->aCol[i].affinity!=0 || sqlite3VdbeParser(v)->nErr>0 );
       if( (pTab->aCol[i].colFlags & COLFLAG_VIRTUAL)==0 ){
         zColAff[j++] = pTab->aCol[i].affinity;
       }
@@ -133539,7 +133552,7 @@ SQLITE_PRIVATE int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFl
     sqlite3ResetAllSchemasOfConnection(db);
     pDb = &db->aDb[iDb];
   }else
-  if( rc==SQLITE_OK || (db->flags&SQLITE_NoSchemaError)){
+  if( rc==SQLITE_OK || ((db->flags&SQLITE_NoSchemaError) && rc!=SQLITE_NOMEM)){
     /* Hack: If the SQLITE_NoSchemaError flag is set, then consider
     ** the schema loaded, even if errors (other than OOM) occurred. In
     ** this situation the current sqlite3_prepare() operation will fail,
@@ -146285,6 +146298,7 @@ SQLITE_API int sqlite3_declare_vtab(sqlite3 *db, const char *zCreateTable){
 
   sqlite3ParseObjectInit(&sParse, db);
   sParse.eParseMode = PARSE_MODE_DECLARE_VTAB;
+  sParse.disableTriggers = 1;
   /* We should never be able to reach this point while loading the
   ** schema.  Nevertheless, defend against that (turn off db->init.busy)
   ** in case a bug arises. */
@@ -154582,8 +154596,17 @@ static void whereLoopOutputAdjust(
         /* If there are extra terms in the WHERE clause not used by an index
         ** that depend only on the table being scanned, and that will tend to
         ** cause many rows to be omitted, then mark that table as
-        ** "self-culling". */
-        pLoop->wsFlags |= WHERE_SELFCULL;
+        ** "self-culling".
+        **
+        ** 2022-03-24:  Self-culling only applies if either the extra terms
+        ** are straight comparison operators that are non-true with NULL
+        ** operand, or if the loop is not a LEFT JOIN.
+        */
+        if( (pTerm->eOperator & 0x3f)!=0
+         || (pWC->pWInfo->pTabList->a[pLoop->iTab].fg.jointype & JT_LEFT)==0
+        ){
+          pLoop->wsFlags |= WHERE_SELFCULL;
+        }
       }
       if( pTerm->truthProb<=0 ){
         /* If a truth probability is specified using the likelihood() hints,
@@ -157882,6 +157905,26 @@ whereBeginError:
   }
 #endif
 
+#ifdef SQLITE_DEBUG
+/*
+** Return true if cursor iCur is opened by instruction k of the
+** bytecode.  Used inside of assert() only.
+*/
+static int cursorIsOpen(Vdbe *v, int iCur, int k){
+  while( k>=0 ){
+    VdbeOp *pOp = sqlite3VdbeGetOp(v,k--);
+    if( pOp->p1!=iCur ) continue;
+    if( pOp->opcode==OP_Close ) return 0;
+    if( pOp->opcode==OP_OpenRead ) return 1;
+    if( pOp->opcode==OP_OpenWrite ) return 1;
+    if( pOp->opcode==OP_OpenDup ) return 1;
+    if( pOp->opcode==OP_OpenAutoindex ) return 1;
+    if( pOp->opcode==OP_OpenEphemeral ) return 1;
+  }
+  return 0;
+}
+#endif /* SQLITE_DEBUG */
+
 /*
 ** Generate the end of the WHERE loop.  See comments on
 ** sqlite3WhereBegin() for additional information.
@@ -158134,14 +158177,15 @@ SQLITE_PRIVATE void sqlite3WhereEnd(WhereInfo *pWInfo){
         ){
           int x = pOp->p2;
           assert( pIdx->pTable==pTab );
+#ifdef SQLITE_ENABLE_OFFSET_SQL_FUNC
+          if( pOp->opcode==OP_Offset ){
+            /* Do not need to translate the column number */
+          }else
+#endif
           if( !HasRowid(pTab) ){
             Index *pPk = sqlite3PrimaryKeyIndex(pTab);
             x = pPk->aiColumn[x];
             assert( x>=0 );
-#ifdef SQLITE_ENABLE_OFFSET_SQL_FUNC
-          }else if( pOp->opcode==OP_Offset ){
-            /* Do not need to translate the column number */
-#endif
           }else{
             testcase( x!=sqlite3StorageColumnToTable(pTab,x) );
             x = sqlite3StorageColumnToTable(pTab,x);
@@ -158151,9 +158195,22 @@ SQLITE_PRIVATE void sqlite3WhereEnd(WhereInfo *pWInfo){
             pOp->p2 = x;
             pOp->p1 = pLevel->iIdxCur;
             OpcodeRewriteTrace(db, k, pOp);
+          }else{
+            /* Unable to translate the table reference into an index
+            ** reference.  Verify that this is harmless - that the
+            ** table being referenced really is open.
+            */
+#ifdef SQLITE_ENABLE_OFFSET_SQL_FUNC
+            assert( (pLoop->wsFlags & WHERE_IDX_ONLY)==0
+                 || cursorIsOpen(v,pOp->p1,k)
+                 || pOp->opcode==OP_Offset
+            );
+#else
+            assert( (pLoop->wsFlags & WHERE_IDX_ONLY)==0
+                 || cursorIsOpen(v,pOp->p1,k)
+            );
+#endif
           }
-          assert( (pLoop->wsFlags & WHERE_IDX_ONLY)==0 || x>=0
-              || pWInfo->eOnePass );
         }else if( pOp->opcode==OP_Rowid ){
           pOp->p1 = pLevel->iIdxCur;
           pOp->opcode = OP_IdxRowid;
@@ -234376,7 +234433,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2022-03-12 13:37:29 38c210fdd258658321c85ec9c01a072fda3ada94540e3239d29b34dc547a8cbc", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2022-03-26 13:51:10 d33c709cc0af66bc5b6dc6216eba9f1f0b40960b9ae83694c986fbf4c1d6f08f", -1, SQLITE_TRANSIENT);
 }
 
 /*
