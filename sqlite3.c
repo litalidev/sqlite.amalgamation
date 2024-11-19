@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.41.1.  By combining all the individual C code files into this
+** version 3.41.2.  By combining all the individual C code files into this
 ** single large file, the entire code can be compiled as a single translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -452,9 +452,9 @@ extern "C" {
 ** [sqlite3_libversion_number()], [sqlite3_sourceid()],
 ** [sqlite_version()] and [sqlite_source_id()].
 */
-#define SQLITE_VERSION        "3.41.1"
-#define SQLITE_VERSION_NUMBER 3041001
-#define SQLITE_SOURCE_ID      "2023-03-10 12:13:52 20399f3eda5ec249d147ba9e48da6e87f969d7966a9a896764ca437ff7e737ff"
+#define SQLITE_VERSION        "3.41.2"
+#define SQLITE_VERSION_NUMBER 3041002
+#define SQLITE_SOURCE_ID      "2023-03-22 11:56:21 0d1fc92f94cb6b76bffe3ec34d69cffde2924203304e8ffc4155597af0c191da"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -16592,7 +16592,7 @@ struct PgHdr {
   ** private to pcache.c and should not be accessed by other modules.
   ** pCache is grouped with the public elements for efficiency.
   */
-  i16 nRef;                      /* Number of users of this page */
+  i64 nRef;                      /* Number of users of this page */
   PgHdr *pDirtyNext;             /* Next element in list of dirty pages */
   PgHdr *pDirtyPrev;             /* Previous element in list of dirty pages */
                           /* NB: pDirtyNext and pDirtyPrev are undefined if the
@@ -16673,12 +16673,12 @@ SQLITE_PRIVATE void sqlite3PcacheClearSyncFlags(PCache *);
 SQLITE_PRIVATE void sqlite3PcacheClear(PCache*);
 
 /* Return the total number of outstanding page references */
-SQLITE_PRIVATE int sqlite3PcacheRefCount(PCache*);
+SQLITE_PRIVATE i64 sqlite3PcacheRefCount(PCache*);
 
 /* Increment the reference count of an existing page */
 SQLITE_PRIVATE void sqlite3PcacheRef(PgHdr*);
 
-SQLITE_PRIVATE int sqlite3PcachePageRefcount(PgHdr*);
+SQLITE_PRIVATE i64 sqlite3PcachePageRefcount(PgHdr*);
 
 /* Return the total number of pages stored in the cache */
 SQLITE_PRIVATE int sqlite3PcachePagecount(PCache*);
@@ -18837,7 +18837,7 @@ struct NameContext {
 #define NC_HasAgg    0x000010 /* One or more aggregate functions seen */
 #define NC_IdxExpr   0x000020 /* True if resolving columns of CREATE INDEX */
 #define NC_SelfRef   0x00002e /* Combo: PartIdx, isCheck, GenCol, and IdxExpr */
-#define NC_VarSelect 0x000040 /* A correlated subquery has been seen */
+#define NC_Subquery  0x000040 /* A subquery has been seen */
 #define NC_UEList    0x000080 /* True if uNC.pEList is used */
 #define NC_UAggInfo  0x000100 /* True if uNC.pAggInfo is used */
 #define NC_UUpsert   0x000200 /* True if uNC.pUpsert is used */
@@ -19208,6 +19208,9 @@ struct Parse {
   u8 withinRJSubrtn;   /* Nesting level for RIGHT JOIN body subroutines */
 #if defined(SQLITE_DEBUG) || defined(SQLITE_COVERAGE_TEST)
   u8 earlyCleanup;     /* OOM inside sqlite3ParserAddCleanup() */
+#endif
+#ifdef SQLITE_DEBUG
+  u8 ifNotExists;      /* Might be true if IF NOT EXISTS.  Assert()s only */
 #endif
   int nRangeReg;       /* Size of the temporary register block */
   int iRangeReg;       /* First register in temporary register block */
@@ -52654,7 +52657,7 @@ bitvec_end:
 struct PCache {
   PgHdr *pDirty, *pDirtyTail;         /* List of dirty pages in LRU order */
   PgHdr *pSynced;                     /* Last synced page in dirty page list */
-  int nRefSum;                        /* Sum of ref counts over all pages */
+  i64 nRefSum;                        /* Sum of ref counts over all pages */
   int szCache;                        /* Configured cache size */
   int szSpill;                        /* Size before spilling occurs */
   int szPage;                         /* Size of every page in this cache */
@@ -52684,7 +52687,7 @@ struct PCache {
     unsigned char *a;
     int j;
     pPg = (PgHdr*)pLower->pExtra;
-    printf("%3d: nRef %2d flgs %02x data ", i, pPg->nRef, pPg->flags);
+    printf("%3lld: nRef %2d flgs %02x data ", i, pPg->nRef, pPg->flags);
     a = (unsigned char *)pLower->pBuf;
     for(j=0; j<12; j++) printf("%02x", a[j]);
     printf(" ptr %p\n", pPg);
@@ -53428,14 +53431,14 @@ SQLITE_PRIVATE PgHdr *sqlite3PcacheDirtyList(PCache *pCache){
 ** This is not the total number of pages referenced, but the sum of the
 ** reference count for all pages.
 */
-SQLITE_PRIVATE int sqlite3PcacheRefCount(PCache *pCache){
+SQLITE_PRIVATE i64 sqlite3PcacheRefCount(PCache *pCache){
   return pCache->nRefSum;
 }
 
 /*
 ** Return the number of references to the page supplied as an argument.
 */
-SQLITE_PRIVATE int sqlite3PcachePageRefcount(PgHdr *p){
+SQLITE_PRIVATE i64 sqlite3PcachePageRefcount(PgHdr *p){
   return p->nRef;
 }
 
@@ -74505,7 +74508,7 @@ static SQLITE_NOINLINE int btreeNext(BtCursor *pCur){
 
   pPage = pCur->pPage;
   idx = ++pCur->ix;
-  if( NEVER(!pPage->isInit) || sqlite3FaultSim(412) ){
+  if( !pPage->isInit || sqlite3FaultSim(412) ){
     return SQLITE_CORRUPT_BKPT;
   }
 
@@ -77634,6 +77637,7 @@ SQLITE_PRIVATE int sqlite3BtreeInsert(
   assert( szNew==pPage->xCellSize(pPage, newCell) );
   assert( szNew <= MX_CELL_SIZE(p->pBt) );
   idx = pCur->ix;
+  pCur->info.nSize = 0;
   if( loc==0 ){
     CellInfo info;
     assert( idx>=0 );
@@ -77706,7 +77710,6 @@ SQLITE_PRIVATE int sqlite3BtreeInsert(
   ** larger than the largest existing key, it is possible to insert the
   ** row without seeking the cursor. This can be a big performance boost.
   */
-  pCur->info.nSize = 0;
   if( pPage->nOverflow ){
     assert( rc==SQLITE_OK );
     pCur->curFlags &= ~(BTCF_ValidNKey);
@@ -104800,8 +104803,8 @@ static int resolveExprStep(Walker *pWalker, Expr *pExpr){
         assert( pNC->nRef>=nRef );
         if( nRef!=pNC->nRef ){
           ExprSetProperty(pExpr, EP_VarSelect);
-          pNC->ncFlags |= NC_VarSelect;
         }
+        pNC->ncFlags |= NC_Subquery;
       }
       break;
     }
@@ -109550,6 +109553,7 @@ SQLITE_PRIVATE void sqlite3ExprCodeGeneratedColumn(
 ){
   int iAddr;
   Vdbe *v = pParse->pVdbe;
+  int nErr = pParse->nErr;
   assert( v!=0 );
   assert( pParse->iSelfTab!=0 );
   if( pParse->iSelfTab>0 ){
@@ -109562,6 +109566,7 @@ SQLITE_PRIVATE void sqlite3ExprCodeGeneratedColumn(
     sqlite3VdbeAddOp4(v, OP_Affinity, regOut, 1, 0, &pCol->affinity, 1);
   }
   if( iAddr ) sqlite3VdbeJumpHere(v, iAddr);
+  if( pParse->nErr>nErr ) pParse->db->errByteOffset = -1;
 }
 #endif /* SQLITE_OMIT_GENERATED_COLUMNS */
 
@@ -109578,6 +109583,7 @@ SQLITE_PRIVATE void sqlite3ExprCodeGetColumnOfTable(
   Column *pCol;
   assert( v!=0 );
   assert( pTab!=0 );
+  assert( iCol!=XN_EXPR );
   if( iCol<0 || iCol==pTab->iPKey ){
     sqlite3VdbeAddOp2(v, OP_Rowid, iTabCur, regOut);
     VdbeComment((v, "%s.rowid", pTab->zName));
@@ -118933,7 +118939,7 @@ SQLITE_PRIVATE void sqlite3AddReturning(Parse *pParse, ExprList *pList){
   if( pParse->pNewTrigger ){
     sqlite3ErrorMsg(pParse, "cannot use RETURNING in a trigger");
   }else{
-    assert( pParse->bReturning==0 );
+    assert( pParse->bReturning==0 || pParse->ifNotExists );
   }
   pParse->bReturning = 1;
   pRet = sqlite3DbMallocZero(db, sizeof(*pRet));
@@ -118959,7 +118965,8 @@ SQLITE_PRIVATE void sqlite3AddReturning(Parse *pParse, ExprList *pList){
   pRet->retTStep.pTrig = &pRet->retTrig;
   pRet->retTStep.pExprList = pList;
   pHash = &(db->aDb[1].pSchema->trigHash);
-  assert( sqlite3HashFind(pHash, RETURNING_TRIGGER_NAME)==0 || pParse->nErr );
+  assert( sqlite3HashFind(pHash, RETURNING_TRIGGER_NAME)==0
+          || pParse->nErr  || pParse->ifNotExists );
   if( sqlite3HashInsert(pHash, RETURNING_TRIGGER_NAME, &pRet->retTrig)
           ==&pRet->retTrig ){
     sqlite3OomFault(db);
@@ -124201,7 +124208,7 @@ SQLITE_PRIVATE void sqlite3DeleteFrom(
 #endif /* SQLITE_OMIT_TRUNCATE_OPTIMIZATION */
   {
     u16 wcf = WHERE_ONEPASS_DESIRED|WHERE_DUPLICATES_OK;
-    if( sNC.ncFlags & NC_VarSelect ) bComplex = 1;
+    if( sNC.ncFlags & NC_Subquery ) bComplex = 1;
     wcf |= (bComplex ? 0 : WHERE_ONEPASS_MULTIROW);
     if( HasRowid(pTab) ){
       /* For a rowid table, initialize the RowSet to an empty set */
@@ -142131,7 +142138,9 @@ static Expr *substExpr(
         sqlite3VectorErrorMsg(pSubst->pParse, pCopy);
       }else{
         sqlite3 *db = pSubst->pParse->db;
-        if( pSubst->isOuterJoin ){
+        if( pSubst->isOuterJoin
+         && (pCopy->op!=TK_COLUMN || pCopy->iTable!=pSubst->iNewTable)
+        ){
           memset(&ifNullRow, 0, sizeof(ifNullRow));
           ifNullRow.op = TK_IF_NULL_ROW;
           ifNullRow.pLeft = pCopy;
@@ -146893,6 +146902,7 @@ SQLITE_PRIVATE void sqlite3BeginTrigger(
       }else{
         assert( !db->init.busy );
         sqlite3CodeVerifySchema(pParse, iDb);
+        VVA_ONLY( pParse->ifNotExists = 1; )
       }
       goto trigger_cleanup;
     }
@@ -148896,12 +148906,22 @@ SQLITE_PRIVATE void sqlite3Update(
       /* Begin the database scan.
       **
       ** Do not consider a single-pass strategy for a multi-row update if
-      ** there are any triggers or foreign keys to process, or rows may
-      ** be deleted as a result of REPLACE conflict handling. Any of these
-      ** things might disturb a cursor being used to scan through the table
-      ** or index, causing a single-pass approach to malfunction.  */
+      ** there is anything that might disrupt the cursor being used to do
+      ** the UPDATE:
+      **   (1) This is a nested UPDATE
+      **   (2) There are triggers
+      **   (3) There are FOREIGN KEY constraints
+      **   (4) There are REPLACE conflict handlers
+      **   (5) There are subqueries in the WHERE clause
+      */
       flags = WHERE_ONEPASS_DESIRED;
-      if( !pParse->nested && !pTrigger && !hasFK && !chngKey && !bReplace ){
+      if( !pParse->nested
+       && !pTrigger
+       && !hasFK
+       && !chngKey
+       && !bReplace
+       && (sNC.ncFlags & NC_Subquery)==0
+      ){
         flags |= WHERE_ONEPASS_MULTIROW;
       }
       pWInfo = sqlite3WhereBegin(pParse, pTabList, pWhere,0,0,0,flags,iIdxCur);
@@ -150866,7 +150886,9 @@ static int vtabCallConstructor(
   sCtx.pPrior = db->pVtabCtx;
   sCtx.bDeclared = 0;
   db->pVtabCtx = &sCtx;
+  pTab->nTabRef++;
   rc = xConstruct(db, pMod->pAux, nArg, azArg, &pVTable->pVtab, &zErr);
+  sqlite3DeleteTable(db, pTab);
   db->pVtabCtx = sCtx.pPrior;
   if( rc==SQLITE_NOMEM ) sqlite3OomFault(db);
   assert( sCtx.pTab==pTab );
@@ -158035,6 +158057,10 @@ static SQLITE_NOINLINE void sqlite3ConstructBloomFilter(
   Vdbe *v = pParse->pVdbe;             /* VDBE under construction */
   WhereLoop *pLoop = pLevel->pWLoop;   /* The loop being coded */
   int iCur;                            /* Cursor for table getting the filter */
+  IndexedExpr *saved_pIdxEpr;          /* saved copy of Parse.pIdxEpr */
+
+  saved_pIdxEpr = pParse->pIdxEpr;
+  pParse->pIdxEpr = 0;
 
   assert( pLoop!=0 );
   assert( v!=0 );
@@ -158091,9 +158117,8 @@ static SQLITE_NOINLINE void sqlite3ConstructBloomFilter(
       int r1 = sqlite3GetTempRange(pParse, n);
       int jj;
       for(jj=0; jj<n; jj++){
-        int iCol = pIdx->aiColumn[jj];
         assert( pIdx->pTable==pItem->pTab );
-        sqlite3ExprCodeGetColumnOfTable(v, pIdx->pTable, iCur, iCol,r1+jj);
+        sqlite3ExprCodeLoadIndexColumn(pParse, pIdx, iCur, jj, r1+jj);
       }
       sqlite3VdbeAddOp4Int(v, OP_FilterAdd, pLevel->regFilter, 0, r1, n);
       sqlite3ReleaseTempRange(pParse, r1, n);
@@ -158124,6 +158149,7 @@ static SQLITE_NOINLINE void sqlite3ConstructBloomFilter(
     }
   }while( iLevel < pWInfo->nLevel );
   sqlite3VdbeJumpHere(v, addrOnce);
+  pParse->pIdxEpr = saved_pIdxEpr;
 }
 
 
@@ -158423,6 +158449,7 @@ static int whereKeyStats(
   assert( pIdx->nSample>0 );
   assert( pRec->nField>0 );
 
+
   /* Do a binary search to find the first sample greater than or equal
   ** to pRec. If pRec contains a single field, the set of samples to search
   ** is simply the aSample[] array. If the samples in aSample[] contain more
@@ -158467,7 +158494,12 @@ static int whereKeyStats(
   ** it is extended to two fields. The duplicates that this creates do not
   ** cause any problems.
   */
-  nField = MIN(pRec->nField, pIdx->nSample);
+  if( !HasRowid(pIdx->pTable) && IsPrimaryKeyIndex(pIdx) ){
+    nField = pIdx->nKeyCol;
+  }else{
+    nField = pIdx->nColumn;
+  }
+  nField = MIN(pRec->nField, nField);
   iCol = 0;
   iSample = pIdx->nSample * nField;
   do{
@@ -162194,6 +162226,10 @@ static int wherePathSolver(WhereInfo *pWInfo, LogEst nRowEst){
     if( pWInfo->wctrlFlags & WHERE_DISTINCTBY ){
       if( pFrom->isOrdered==pWInfo->pOrderBy->nExpr ){
         pWInfo->eDistinct = WHERE_DISTINCT_ORDERED;
+      }
+      if( pWInfo->pSelect->pOrderBy
+       && pWInfo->nOBSat > pWInfo->pSelect->pOrderBy->nExpr ){
+        pWInfo->nOBSat = pWInfo->pSelect->pOrderBy->nExpr;
       }
     }else{
       pWInfo->revMask = pFrom->revLoop;
@@ -193071,16 +193107,18 @@ static int fts3MsrBufferData(
   char *pList,
   i64 nList
 ){
-  if( nList>pMsr->nBuffer ){
+  if( (nList+FTS3_NODE_PADDING)>pMsr->nBuffer ){
     char *pNew;
-    pMsr->nBuffer = nList*2;
-    pNew = (char *)sqlite3_realloc64(pMsr->aBuffer, pMsr->nBuffer);
+    int nNew = nList*2 + FTS3_NODE_PADDING;
+    pNew = (char *)sqlite3_realloc64(pMsr->aBuffer, nNew);
     if( !pNew ) return SQLITE_NOMEM;
     pMsr->aBuffer = pNew;
+    pMsr->nBuffer = nNew;
   }
 
   assert( nList>0 );
   memcpy(pMsr->aBuffer, pList, nList);
+  memset(&pMsr->aBuffer[nList], 0, FTS3_NODE_PADDING);
   return SQLITE_OK;
 }
 
@@ -240224,7 +240262,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2023-03-10 12:13:52 20399f3eda5ec249d147ba9e48da6e87f969d7966a9a896764ca437ff7e737ff", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2023-03-22 11:56:21 0d1fc92f94cb6b76bffe3ec34d69cffde2924203304e8ffc4155597af0c191da", -1, SQLITE_TRANSIENT);
 }
 
 /*
