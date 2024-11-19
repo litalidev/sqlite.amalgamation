@@ -1,6 +1,6 @@
 /******************************************************************************
 ** This file is an amalgamation of many separate C source files from SQLite
-** version 3.38.2.  By combining all the individual C code files into this
+** version 3.38.3.  By combining all the individual C code files into this
 ** single large file, the entire code can be compiled as a single translation
 ** unit.  This allows many compilers to do optimizations that would not be
 ** possible if the files were compiled separately.  Performance improvements
@@ -452,9 +452,9 @@ extern "C" {
 ** [sqlite3_libversion_number()], [sqlite3_sourceid()],
 ** [sqlite_version()] and [sqlite_source_id()].
 */
-#define SQLITE_VERSION        "3.38.2"
-#define SQLITE_VERSION_NUMBER 3038002
-#define SQLITE_SOURCE_ID      "2022-03-26 13:51:10 d33c709cc0af66bc5b6dc6216eba9f1f0b40960b9ae83694c986fbf4c1d6f08f"
+#define SQLITE_VERSION        "3.38.3"
+#define SQLITE_VERSION_NUMBER 3038003
+#define SQLITE_SOURCE_ID      "2022-04-27 12:03:15 9547e2c38a1c6f751a77d4d796894dec4dc5d8f5d79b1cd39e1ffc50df7b3be4"
 
 /*
 ** CAPI3REF: Run-Time Library Version Numbers
@@ -19929,6 +19929,7 @@ SQLITE_PRIVATE int sqlite3ExprIsConstantNotJoin(Expr*);
 SQLITE_PRIVATE int sqlite3ExprIsConstantOrFunction(Expr*, u8);
 SQLITE_PRIVATE int sqlite3ExprIsConstantOrGroupBy(Parse*, Expr*, ExprList*);
 SQLITE_PRIVATE int sqlite3ExprIsTableConstant(Expr*,int);
+SQLITE_PRIVATE int sqlite3ExprIsTableConstraint(Expr*,const SrcItem*);
 #ifdef SQLITE_ENABLE_CURSOR_HINTS
 SQLITE_PRIVATE int sqlite3ExprContainsSubquery(Expr*);
 #endif
@@ -29337,8 +29338,9 @@ SQLITE_PRIVATE char *sqlite3DbSpanDup(sqlite3 *db, const char *zStart, const cha
 ** Free any prior content in *pz and replace it with a copy of zNew.
 */
 SQLITE_PRIVATE void sqlite3SetString(char **pz, sqlite3 *db, const char *zNew){
+  char *z = sqlite3DbStrDup(db, zNew);
   sqlite3DbFree(db, *pz);
-  *pz = sqlite3DbStrDup(db, zNew);
+  *pz = z;
 }
 
 /*
@@ -67764,6 +67766,8 @@ static u8 *pageFindSlot(MemPage *pPg, int nByte, int *pRc){
         ** fragmented bytes within the page. */
         memcpy(&aData[iAddr], &aData[pc], 2);
         aData[hdr+7] += (u8)x;
+        testcase( pc+x>maxPC );
+        return &aData[pc];
       }else if( x+pc > maxPC ){
         /* This slot extends off the end of the usable part of the page */
         *pRc = SQLITE_CORRUPT_PAGE(pPg);
@@ -71963,7 +71967,7 @@ SQLITE_PRIVATE int sqlite3BtreeIndexMoveto(
     assert( lwr==upr+1 || (pPage->intKey && !pPage->leaf) );
     assert( pPage->isInit );
     if( pPage->leaf ){
-      assert( pCur->ix<pCur->pPage->nCell );
+      assert( pCur->ix<pCur->pPage->nCell || CORRUPT_DB );
       pCur->ix = (u16)idx;
       *pRes = c;
       rc = SQLITE_OK;
@@ -74487,7 +74491,7 @@ static int balance_nonroot(
     iOvflSpace += sz;
     assert( sz<=pBt->maxLocal+23 );
     assert( iOvflSpace <= (int)pBt->pageSize );
-    for(k=0; b.ixNx[k]<=i && ALWAYS(k<NB*2); k++){}
+    for(k=0; b.ixNx[k]<=j && ALWAYS(k<NB*2); k++){}
     pSrcEnd = b.apEnd[k];
     if( SQLITE_WITHIN(pSrcEnd, pCell, pCell+sz) ){
       rc = SQLITE_CORRUPT_BKPT;
@@ -78052,7 +78056,11 @@ SQLITE_PRIVATE int sqlite3VdbeChangeEncoding(Mem *pMem, int desiredEnc){
   assert( !sqlite3VdbeMemIsRowSet(pMem) );
   assert( desiredEnc==SQLITE_UTF8 || desiredEnc==SQLITE_UTF16LE
            || desiredEnc==SQLITE_UTF16BE );
-  if( !(pMem->flags&MEM_Str) || pMem->enc==desiredEnc ){
+  if( !(pMem->flags&MEM_Str) ){
+    pMem->enc = desiredEnc;
+    return SQLITE_OK;
+  }
+  if( pMem->enc==desiredEnc ){
     return SQLITE_OK;
   }
   assert( pMem->db==0 || sqlite3_mutex_held(pMem->db->mutex) );
@@ -104757,6 +104765,38 @@ SQLITE_PRIVATE int sqlite3ExprIsConstantNotJoin(Expr *p){
 */
 SQLITE_PRIVATE int sqlite3ExprIsTableConstant(Expr *p, int iCur){
   return exprIsConst(p, 3, iCur);
+}
+
+/*
+** Check pExpr to see if it is an invariant constraint on data source pSrc.
+** This is an optimization.  False negatives will perhaps cause slower
+** queries, but false positives will yield incorrect answers.  So when in
+** double, return 0.
+**
+** To be an invariant constraint, the following must be true:
+**
+**   (1)  pExpr cannot refer to any table other than pSrc->iCursor.
+**
+**   (2)  pExpr cannot use subqueries or non-deterministic functions.
+**
+**   (*)  ** Not applicable to this branch **
+**
+**   (4)  If pSrc is the right operand of a LEFT JOIN, then...
+**         (4a)  pExpr must come from an ON clause..
+**         (4b)  and specifically the ON clause associated with the LEFT JOIN.
+**
+**   (5)  If pSrc is not the right operand of a LEFT JOIN or the left
+**        operand of a RIGHT JOIN, then pExpr must be from the WHERE
+**        clause, not an ON clause.
+*/
+SQLITE_PRIVATE int sqlite3ExprIsTableConstraint(Expr *pExpr, const SrcItem *pSrc){
+  if( pSrc->fg.jointype & JT_LEFT ){
+    if( !ExprHasProperty(pExpr, EP_FromJoin) ) return 0;    /* rule (4a) */
+    if( pExpr->w.iRightJoinTable!=pSrc->iCursor ) return 0; /* rule (4b) */
+  }else{
+    if( ExprHasProperty(pExpr, EP_FromJoin) ) return 0;     /* rule (5) */
+  }
+  return sqlite3ExprIsTableConstant(pExpr, pSrc->iCursor);  /* rules (1), (2) */
 }
 
 
@@ -139042,8 +139082,7 @@ static int pushDownWhereTerms(
   Parse *pParse,        /* Parse context (for malloc() and error reporting) */
   Select *pSubq,        /* The subquery whose WHERE clause is to be augmented */
   Expr *pWhere,         /* The WHERE clause of the outer query */
-  int iCursor,          /* Cursor number of the subquery */
-  int isLeftJoin        /* True if pSubq is the right term of a LEFT JOIN */
+  SrcItem *pSrc         /* The subquery term of the outer FROM clause */
 ){
   Expr *pNew;
   int nChng = 0;
@@ -139078,10 +139117,11 @@ static int pushDownWhereTerms(
     return 0; /* restriction (3) */
   }
   while( pWhere->op==TK_AND ){
-    nChng += pushDownWhereTerms(pParse, pSubq, pWhere->pRight,
-                                iCursor, isLeftJoin);
+    nChng += pushDownWhereTerms(pParse, pSubq, pWhere->pRight, pSrc);
     pWhere = pWhere->pLeft;
   }
+
+#if 0  /* Legacy code. Checks now done by sqlite3ExprIsTableConstraint() */
   if( isLeftJoin
    && (ExprHasProperty(pWhere,EP_FromJoin)==0
          || pWhere->w.iRightJoinTable!=iCursor)
@@ -139093,7 +139133,9 @@ static int pushDownWhereTerms(
   ){
     return 0; /* restriction (5) */
   }
-  if( sqlite3ExprIsTableConstant(pWhere, iCursor) ){
+#endif
+
+  if( sqlite3ExprIsTableConstraint(pWhere, pSrc) ){
     nChng++;
     pSubq->selFlags |= SF_PushDown;
     while( pSubq ){
@@ -139101,8 +139143,8 @@ static int pushDownWhereTerms(
       pNew = sqlite3ExprDup(pParse->db, pWhere, 0);
       unsetJoinExpr(pNew, -1);
       x.pParse = pParse;
-      x.iTable = iCursor;
-      x.iNewTable = iCursor;
+      x.iTable = pSrc->iCursor;
+      x.iNewTable = pSrc->iCursor;
       x.isLeftJoin = 0;
       x.pEList = pSubq->pEList;
       pNew = substExpr(&x, pNew);
@@ -140884,8 +140926,7 @@ SQLITE_PRIVATE int sqlite3Select(
     if( OptimizationEnabled(db, SQLITE_PushDown)
      && (pItem->fg.isCte==0
          || (pItem->u2.pCteUse->eM10d!=M10d_Yes && pItem->u2.pCteUse->nUse<2))
-     && pushDownWhereTerms(pParse, pSub, p->pWhere, pItem->iCursor,
-                           (pItem->fg.jointype & JT_OUTER)!=0)
+     && pushDownWhereTerms(pParse, pSub, p->pWhere, pItem)
     ){
 #if SELECTTRACE_ENABLED
       if( sqlite3SelectTrace & 0x100 ){
@@ -152810,8 +152851,7 @@ static SQLITE_NOINLINE void constructAutomaticIndex(
     ** WHERE clause (or the ON clause of a LEFT join) that constrain which
     ** rows of the target table (pSrc) that can be used. */
     if( (pTerm->wtFlags & TERM_VIRTUAL)==0
-     && ((pSrc->fg.jointype&JT_LEFT)==0 || ExprHasProperty(pExpr,EP_FromJoin))
-     && sqlite3ExprIsTableConstant(pExpr, pSrc->iCursor)
+     && sqlite3ExprIsTableConstraint(pExpr, pSrc)
     ){
       pPartial = sqlite3ExprAnd(pParse, pPartial,
                                 sqlite3ExprDup(pParse->db, pExpr, 0));
@@ -153050,7 +153090,7 @@ static SQLITE_NOINLINE void sqlite3ConstructBloomFilter(
     for(pTerm=pWInfo->sWC.a; pTerm<pWCEnd; pTerm++){
       Expr *pExpr = pTerm->pExpr;
       if( (pTerm->wtFlags & TERM_VIRTUAL)==0
-       && sqlite3ExprIsTableConstant(pExpr, iCur)
+       && sqlite3ExprIsTableConstraint(pExpr, pItem)
       ){
         sqlite3ExprIfFalse(pParse, pTerm->pExpr, addrCont, SQLITE_JUMPIFNULL);
       }
@@ -159970,7 +160010,7 @@ static void windowAggStep(
 
         for(iEnd=sqlite3VdbeCurrentAddr(v); iOp<iEnd; iOp++){
           VdbeOp *pOp = sqlite3VdbeGetOp(v, iOp);
-          if( pOp->opcode==OP_Column && pOp->p1==pWin->iEphCsr ){
+          if( pOp->opcode==OP_Column && pOp->p1==pMWin->iEphCsr ){
             pOp->p1 = csr;
           }
         }
@@ -194288,14 +194328,15 @@ static JsonNode *jsonLookupStep(
         *pzErr = zPath;
         return 0;
       }
+      testcase( nKey==0 );
     }else{
       zKey = zPath;
       for(i=0; zPath[i] && zPath[i]!='.' && zPath[i]!='['; i++){}
       nKey = i;
-    }
-    if( nKey==0 ){
-      *pzErr = zPath;
-      return 0;
+      if( nKey==0 ){
+        *pzErr = zPath;
+        return 0;
+      }
     }
     j = 1;
     for(;;){
@@ -195443,6 +195484,33 @@ static int jsonEachNext(sqlite3_vtab_cursor *cur){
   return SQLITE_OK;
 }
 
+/* Append an object label to the JSON Path being constructed
+** in pStr.
+*/
+static void jsonAppendObjectPathElement(
+  JsonString *pStr,
+  JsonNode *pNode
+){
+  int jj, nn;
+  const char *z;
+  assert( pNode->eType==JSON_STRING );
+  assert( pNode->jnFlags & JNODE_LABEL );
+  assert( pNode->eU==1 );
+  z = pNode->u.zJContent;
+  nn = pNode->n;
+  assert( nn>=2 );
+  assert( z[0]=='"' );
+  assert( z[nn-1]=='"' );
+  if( nn>2 && sqlite3Isalpha(z[1]) ){
+    for(jj=2; jj<nn-1 && sqlite3Isalnum(z[jj]); jj++){}
+    if( jj==nn-1 ){
+      z++;
+      nn -= 2;
+    }
+  }
+  jsonPrintf(nn+2, pStr, ".%.*s", nn, z);
+}
+
 /* Append the name of the path for element i to pStr
 */
 static void jsonEachComputePath(
@@ -195467,10 +195535,7 @@ static void jsonEachComputePath(
   }else{
     assert( pUp->eType==JSON_OBJECT );
     if( (pNode->jnFlags & JNODE_LABEL)==0 ) pNode--;
-    assert( pNode->eType==JSON_STRING );
-    assert( pNode->jnFlags & JNODE_LABEL );
-    assert( pNode->eU==1 );
-    jsonPrintf(pNode->n+1, pStr, ".%.*s", pNode->n-2, pNode->u.zJContent+1);
+    jsonAppendObjectPathElement(pStr, pNode);
   }
 }
 
@@ -195541,8 +195606,7 @@ static int jsonEachColumn(
         if( p->eType==JSON_ARRAY ){
           jsonPrintf(30, &x, "[%d]", p->iRowid);
         }else if( p->eType==JSON_OBJECT ){
-          assert( pThis->eU==1 );
-          jsonPrintf(pThis->n, &x, ".%.*s", pThis->n-2, pThis->u.zJContent+1);
+          jsonAppendObjectPathElement(&x, pThis);
         }
       }
       jsonResult(&x);
@@ -234433,7 +234497,7 @@ static void fts5SourceIdFunc(
 ){
   assert( nArg==0 );
   UNUSED_PARAM2(nArg, apUnused);
-  sqlite3_result_text(pCtx, "fts5: 2022-03-26 13:51:10 d33c709cc0af66bc5b6dc6216eba9f1f0b40960b9ae83694c986fbf4c1d6f08f", -1, SQLITE_TRANSIENT);
+  sqlite3_result_text(pCtx, "fts5: 2022-04-27 12:03:15 9547e2c38a1c6f751a77d4d796894dec4dc5d8f5d79b1cd39e1ffc50df7b3be4", -1, SQLITE_TRANSIENT);
 }
 
 /*
